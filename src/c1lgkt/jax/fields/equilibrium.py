@@ -151,7 +151,7 @@ class Equilibrium(eqx.Module):
         # Detect if a particle is outside the LCFS; if so, use different interpolation
         outside_lcfs = jnp.logical_or(psi > self.psix, z < self.zx)
         ff = jnp.where(outside_lcfs, self.ff[-1], self.interp_ff(psi))
-        dff = jnp.where(outside_lcfs, 0.0, self.interp_ff(psi, nu=1))
+        dff = jnp.where(outside_lcfs, 0.0, self.interp_ff(psi, dx=1))
 
         # Store the evaluations of the interpolations, to pass to other functions that will use it
         psi_ev = (psi, psidr, psidz, psidrr, psidrz, psidzz)
@@ -163,18 +163,16 @@ class Equilibrium(eqx.Module):
     def compute_geom_terms(self, r, psi_ev, ff_ev):
         """
         Computes unit vector b, |B|, grad|B|, and curl(b) given psi and ff evaluations
-        TODO: Figure out how to properly vectorize this?
         """
         (psi, psidr, psidz, psidrr, psidrz, psidzz) = psi_ev
         (ff, dff) = ff_ev
-        nump = len(r)
 
         # B vector
         bv = jnp.array([-psidz / r, -ff / r, psidr / r])
         # |B|
         modb = jnp.linalg.norm(bv, axis=0)
         # B unit vector
-        bu = bv / modb[None,:]
+        bu = bv / modb[None, ...]
         
         ## Evaluate grad|B| in the following manner:
         # grad|B| = (grad(R|B|) - B grad(R)) / R
@@ -183,20 +181,19 @@ class Equilibrium(eqx.Module):
         # grad(F(psi)**2) = 2 F'(psi) grad(psi)
         # grad(|grad(psi)|**2) = 2 Hess(psi) grad(psi)
         rmodb = r * modb
-        gradpsi = jnp.array([psidr, jnp.zeros(nump), psidz])
-        gradf2_half = (ff * dff)[None,:] * gradpsi
+        gradpsi = jnp.array([psidr, jnp.zeros_like(r), psidz])
+        gradf2_half = (ff * dff)[None, ...] * gradpsi
 
         # Note that Hess(psi) is symmetric in Cylindrical coordinates.
         # Due to axisymmetry, we only need to evaluate the Hess(psi) in the R,Z plane
-        gradgradpsi2_half = jnp.array([psidr * psidrr + psidz * psidrz, jnp.zeros(nump), psidr * psidrz + psidz * psidzz])
-        gradrmodb = (gradf2_half + gradgradpsi2_half) / rmodb[None,:]
+        gradgradpsi2_half = jnp.array([psidr * psidrr + psidz * psidrz, jnp.zeros_like(r), psidr * psidrz + psidz * psidzz])
+        gradrmodb = (gradf2_half + gradgradpsi2_half) / rmodb[None, ...]
 
-        gradmodb = (gradrmodb - jnp.array([modb, jnp.zeros(nump), jnp.zeros(nump)]))/r[None,:]
+        gradmodb = (gradrmodb - jnp.array([modb, jnp.zeros_like(r), jnp.zeros_like(r)])) / r[None, ...]
 
         ## Evalute curl(bhat) = curl(B/|B|) = (|B| curl(B) - grad|B| x B) / B**2
         curlb = jnp.array([dff * psidz / r, -(psidzz + psidrr) / r - 2*psidr / r**2, -dff * psidr / r])
-        curlbu = (curlb - jnp.cross(gradmodb, bu, axis=0))/modb[None,:]
-
+        curlbu = (curlb - jnp.cross(gradmodb, bu, axis=0)) / modb[None, ...]
         return bv, bu, modb, gradmodb, curlbu
     
     def plot_magnetic_geometry(self, ax: mpl.axes.Axes, monochrome=True, alpha=1.0):
