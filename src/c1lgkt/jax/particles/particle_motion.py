@@ -11,6 +11,8 @@ import jax.numpy as jnp
 import jax
 import interpax
 
+from jaxtyping import ArrayLike, Real
+
 # %% Arguments for the various pushers
 
 class ParticleParams(NamedTuple):
@@ -48,24 +50,6 @@ class PusherArgs(NamedTuple):
     eq: Equilibrium | None = None
     pp: ParticleParams | None = None
     zonal_fields: interpax.Interpolator1D | None = None # Temporary; storage for zonally symmetric fields
-
-# %% Pushers for field lines
-
-def f_fieldline(t, state, args: PusherArgs):
-    eq = args.eq
-
-    r, varphi, z = state
-
-    br, bt, bz = eq.compute_bv(r, z)
-
-    drdt = br
-    dvarphidt = bt / r  # Convert Bphi to angular velocity
-    dzdt = bz
-
-    return (drdt, dvarphidt, dzdt)
-
-# %% Events for particle termination
-
 
 
 # %% Functions for gyrokinetic particle pushing with zonally symmetric equilibria
@@ -113,12 +97,18 @@ def f_driftkinetic_midplane(t, state, args: PusherArgs):
     """
     Push a drift-kinetic tracer, but also follow winding angles around the magnetic axis and around (v_||, Z)
     """
+    # Unpack the state
     r, varphi, z, vll, mu, theta_pol, theta_vll = state
+    # We need these arguments
     eq = args.eq
     pp = args.pp
     
+    # Pass through to the basic drift-kinetic pusher
     drdt, dvarphidt, dzdt, dvlldt, dmudt = f_driftkinetic(t, (r, varphi, z, vll, mu), args)
+
+    # Compute the winding rates
     dthetapoldt = ((r - eq.raxis) * dzdt - (z - eq.zaxis) * drdt) / ((r - eq.raxis)**2 + (z - eq.zaxis)**2)
     dthetavlldt = ((vll / pp.vt) * dzdt - (z - eq.zaxis) * dvlldt / pp.vt) / ((z - eq.zaxis)**2 + (vll/pp.vt)**2)
 
+    # Return everything
     return (drdt, dvarphidt, dzdt, dvlldt, dmudt, dthetapoldt, dthetavlldt)

@@ -6,10 +6,8 @@ Class for magnetic and profile equilibria. Based off of equilibrium.m provided b
 """
 
 import jax.numpy as jnp
-import jax.tree_util as jtu
 import equinox as eqx
 import interpax
-import numpy as np
 
 import matplotlib.pyplot as plt
 import matplotlib as mpl
@@ -158,7 +156,6 @@ class Equilibrium(eqx.Module):
         ff_ev = (ff, dff)
 
         return psi_ev, ff_ev
-    
     
     def compute_geom_terms(self, r, psi_ev, ff_ev):
         """
