@@ -2,7 +2,7 @@
 """
 @author: maple
 
-Class for magnetic and profile equilibria. Based off of equilibrium.m provided by Hongxuan Zhu
+Class for magnetic and profile equilibria.
 """
 
 import jax.numpy as jnp
@@ -13,12 +13,14 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 
 from typing import Type, TypeVar, NamedTuple
+from jaxtyping import ArrayLike, Real
 
+import re
 
 # %%
 
 # List of variables expected in the magnetic geometry. Used to generate some code
-eqd_vars = 'mr mz mpsi rmin rmax zmin zmax rgrid zgrid raxis zaxis psix rx zx psi ff psirz wallrz lcfsrz'.split()
+eqd_vars = 'Nr Nz Npsi rmin rmax zmin zmax rgrid zgrid raxis zaxis psix rx zx psi ff psirz wallrz lcfsrz'.split()
 setter_code = '\n'.join('self.' + s + ' = kwargs["' + s + '"]' for s in eqd_vars)
 
 # Some static typing stuff to help with type hinting
@@ -31,7 +33,7 @@ class Equilibrium(eqx.Module):
 
     Attributes
     ----------
-    mr, mz, mpsi: int
+    Nr, Nz, Npsi: int
         Number of grid points in R, Z, and psi respectively
     rmin, rmax, zmin, zmax: float
         Minimum and maximum R and Z values in the grid
@@ -58,17 +60,17 @@ class Equilibrium(eqx.Module):
     interp_psi: interpax.Interpolator2D
         Interpolator for psi(R,Z)
     """
-    mr: int
-    mz: int
-    mpsi: int
+    Nr: int
+    Nz: int
+    Npsi: int
 
     rmin: float
     rmax: float
     zmin: float
     zmax: float
 
-    rgrid: jnp.ndarray
-    zgrid: jnp.ndarray
+    rgrid: Real[ArrayLike, "{Nr}"]
+    zgrid: Real[ArrayLike, "{Nz}"]
 
     raxis: float
     zaxis: float
@@ -76,13 +78,13 @@ class Equilibrium(eqx.Module):
     rx: float
     zx: float
 
-    psi: jnp.ndarray
-    ff: jnp.ndarray
+    psi: Real[ArrayLike, "{Npsi}"]
+    ff: Real[ArrayLike, "{Npsi}"]
 
-    psirz: jnp.ndarray
+    psirz: Real[ArrayLike, "{Nz} {Nr}"]
 
-    wallrz: jnp.ndarray
-    lcfsrz: jnp.ndarray
+    wallrz: Real[ArrayLike, "2 Nwall"]
+    lcfsrz: Real[ArrayLike, "2 Nlcfs"]
 
     interp_ff: interpax.Interpolator1D
     interp_psi: interpax.Interpolator2D
@@ -92,9 +94,9 @@ class Equilibrium(eqx.Module):
         Instantiates an equilibrium with magnetic data initialized from keyword arguments
         """
         # Use the generated setter_code above to get the benefit of code completion
-        self.mr = kwargs["mr"]
-        self.mz = kwargs["mz"]
-        self.mpsi = kwargs["mpsi"]
+        self.Nr = kwargs["Nr"]
+        self.Nz = kwargs["Nz"]
+        self.Npsi = kwargs["Npsi"]
         self.rmin = kwargs["rmin"]
         self.rmax = kwargs["rmax"]
         self.zmin = kwargs["zmin"]
@@ -201,62 +203,163 @@ class Equilibrium(eqx.Module):
         
         if monochrome:
             ax.contour(eq.rgrid, eq.zgrid, eq.psirz, levels=64, colors=['tab:gray'], linewidths=mpl.rcParams['lines.linewidth']*0.5, alpha=alpha)
-            ax.plot(eq.wallrz[:,0], eq.wallrz[:,1], c='k')
-            ax.plot(eq.lcfsrz[:,0], eq.lcfsrz[:,1], c='k', alpha=alpha)
+            ax.plot(eq.wallrz[0,:], eq.wallrz[1,:], c='k')
+            ax.plot(eq.lcfsrz[0,:], eq.lcfsrz[1,:], c='k', alpha=alpha)
             ax.set_aspect('equal')
         else:
             ax.contour(eq.rgrid, eq.zgrid, eq.psirz, levels=64, linewidths=mpl.rcParams['lines.linewidth']*0.5, alpha=alpha)
-            ax.plot(eq.wallrz[:,0], eq.wallrz[:,1])
-            ax.plot(eq.lcfsrz[:,0], eq.lcfsrz[:,1], alpha=alpha)
+            ax.plot(eq.wallrz[0,:], eq.wallrz[1,:])
+            ax.plot(eq.lcfsrz[0,:], eq.lcfsrz[1,:], alpha=alpha)
             ax.set_aspect('equal')
 
     @classmethod
     def from_eqdfile(cls: Type[T], filename: str) -> T:
         """
-        Loads a *.eqd file and returns an instance of an equilibrium class
+        Loads a *.eqd file and returns an instance of an equilibrium class. Based off of equilibrium.m provided by Hongxuan Zhu
         """
         
         with open(filename, 'r') as f:
             data = f.readlines()
             
             # Read and convert the line-by-line data at the top of the file
-            mr, mz, mpsi = map(int,data[1].split())
+            Nr, Nz, Npsi = map(int,data[1].split())
             rmin, rmax, zmin, zmax = map(float,data[2].split())
             raxis, zaxis, baxis = map(float,data[3].split()) # Note: baxis is not used
             psix, rx, zx = map(float, data[4].split())
             
-            rgrid = jnp.linspace(rmin, rmax, mr)
-            zgrid = jnp.linspace(zmin, zmax, mz)
+            rgrid = jnp.linspace(rmin, rmax, Nr)
+            zgrid = jnp.linspace(zmin, zmax, Nz)
 
             # Take the lines corresponding to psi, join them into a single array, then parse them
             begin_read = 5
-            end_read = begin_read+1+(mpsi-1)//4
+            end_read = begin_read+1+(Npsi-1)//4
             psi = jnp.array((' '.join(data[begin_read:end_read])).split(), dtype=float)
             # Update the read line, then proceed to the next block of data
             begin_read = end_read
-            end_read = begin_read+1+(mpsi-1)//4
+            end_read = begin_read+1+(Npsi-1)//4
             ff = jnp.array((' '.join(data[begin_read:end_read])).split(), dtype=float) # Toroidal magnetic field?
             
             # Get 2d psi grid as a function of (R,z)
             begin_read = end_read
-            end_read = begin_read+1+(mr*mz-1)//4
-            psirz = jnp.array((' '.join(data[begin_read:end_read])).split(), dtype=float).reshape((mz,mr))
+            end_read = begin_read+1+(Nr*Nz-1)//4
+            psirz = jnp.array((' '.join(data[begin_read:end_read])).split(), dtype=float).reshape((Nz,Nr))
             
             # Get the shape of the wall
             begin_read = end_read
-            mw = int(data[begin_read+1].strip())
+            Nwall = int(data[begin_read+1].strip())
             begin_read = begin_read + 2
-            end_read = begin_read + 1 + (2*mw-1)//2
-            wallrz = jnp.array((' '.join(data[begin_read:end_read])).split(), dtype=float).reshape((mw,2))
+            end_read = begin_read + 1 + (2*Nwall-1)//2
+            wallrz = jnp.array((' '.join(data[begin_read:end_read])).split(), dtype=float).reshape((Nwall,2)).T
             
             # Get the shape of the LCFS
             begin_read = end_read
-            ml = int(data[begin_read+1].strip())
+            Nlcfs = int(data[begin_read+1].strip())
             begin_read = begin_read + 2
-            end_read = begin_read + 1 + (2*ml-1)//2
-            lcfsrz = jnp.array((' '.join(data[begin_read:end_read])).split(), dtype=float).reshape((ml,2))
+            end_read = begin_read + 1 + (2*Nlcfs-1)//2
+            lcfsrz = jnp.array((' '.join(data[begin_read:end_read])).split(), dtype=float).reshape((Nlcfs,2)).T
         
         # Use reflection to set these variables out of laziness
         local_vars = locals()
         eq_kwargs = {key: local_vars[key] for key in eqd_vars}
         return cls(**eq_kwargs)
+
+    @classmethod
+    def from_gfile(cls: Type[T], filename: str) -> T:
+        """
+        Loads a g-file and returns an instance of an equilibrium class.
+        """
+        with open(filename, 'r') as f:
+            data = f.readlines()
+
+            # Start with the first line
+            tokens = data[0].split()
+            # Get the number of radial and vertical grid points
+            Nr = int(tokens[-2])
+            Nz = int(tokens[-1])
+            Npsi  = Nr
+
+            # Helper function to read a line of tokens
+            def read_tokens(line: int):
+                return list(map(float,re.findall(r'-?\d\.\d*[eE][-+]\d*', data[line])))
+
+            # The second line contains information for constructing RZ grid
+            rdim, zdim, rcentr, rmin, zmid = read_tokens(line=1)
+            rmax = rmin + rdim
+            zmin = zmid - zdim / 2
+            zmax = zmid + zdim / 2
+
+            rgrid = jnp.linspace(rmin, rmax, Nr)
+            zgrid = jnp.linspace(zmin, zmax, Nz)
+
+            # The third line contains R,Z of magnetic axis, psi at magnetic axis, and LCFS
+            raxis, zaxis, psiaxis, psix, bcentr = tokens = read_tokens(line=2)
+
+            # Out of convenience, renormalize psi such that psiaxis = 0
+            psix -= psiaxis
+            
+            # read EFIT-calculated plasma current, psi at magnetic axis (duplicate),
+            # dummy, R of magnetic axis (duplicate), dummy
+            ip, _, _, _, _ = read_tokens(line=3)
+
+            # Skip the 5th line
+            _, _, _, _, _ = read_tokens(line=4)
+
+            # Start keeping track of the current line
+            line = 5
+
+            # Helper function to read arrays
+            def read_array(begin_read: int, npts: int):
+                # Number of rows to read in an array
+                nrows = npts//5
+                if npts % 5 != 0:     # catch truncated rows
+                    nrows += 1
+
+                temp_array = []
+                for i in range(nrows):
+                    temp_array.extend(read_tokens(line=begin_read + i))
+                return begin_read + nrows, jnp.array(temp_array)
+            
+            # First, read in ff
+            line, ff = read_array(line, Npsi)
+            # Next, read pressure
+            line, fluxPres = read_array(line, Npsi)
+            # Read ffprim
+            line, ffprim = read_array(line, Npsi)
+            # Read pprime
+            line, pprime = read_array(line, Npsi)
+
+            # psi grid on which the flux functions are defined
+            psi = jnp.linspace(0, psix, Npsi)
+
+            # Now, read the 2d psirz array
+            line, psirz = read_array(line, Nr * Nz)
+            psirz = psirz.reshape((Nz, Nr)) - psiaxis  # renormalize psirz
+
+            # Now read q profile
+            line, qpsi = read_array(line, Npsi)
+
+            # Now, we read the LCFS and wall points
+            tokens = data[line].split()
+            Nlcfs = int(tokens[0])
+            Nwall = int(tokens[1])
+            line += 1
+
+            line, lcfsrz = read_array(line, 2*Nlcfs)
+            lcfsrz = lcfsrz.reshape((Nlcfs, 2)).T
+            line, wallrz = read_array(line, 2*Nwall)
+            wallrz = wallrz.reshape((Nwall, 2)).T
+
+            # Estimate the X-point location from the LCFS points.
+            # TODO: Need to do something about multiple X-points
+            zmin_idx = jnp.argmin(lcfsrz[1,:])
+            zx = lcfsrz[1, zmin_idx]
+            rx = lcfsrz[0, zmin_idx]
+
+        # Use reflection to set these variables out of laziness
+        local_vars = locals()
+        eq_kwargs = {key: local_vars[key] for key in eqd_vars}
+        return cls(**eq_kwargs)
+            
+
+
+# %%

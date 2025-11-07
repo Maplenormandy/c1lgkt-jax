@@ -18,6 +18,7 @@ import diffrax
 import optimistix as optx
 
 from typing import NamedTuple
+from functools import partial
 
 from jaxtyping import ArrayLike, Real
 
@@ -28,6 +29,7 @@ from .equilibrium import Equilibrium
 class FieldlineArgs(NamedTuple):
     eq: Equilibrium  # Equilibrium object
 
+@jax.jit
 def f_fieldline(t, state, args: FieldlineArgs):
     """
     Push a magnetic field line in (R, varphi, Z) coordinates.
@@ -44,6 +46,7 @@ def f_fieldline(t, state, args: FieldlineArgs):
 
     return (drdt, dvarphidt, dzdt)
 
+@jax.jit
 def f_fieldline_axial(t, state, args: FieldlineArgs):
     """
     Push a magnetic field line in (rhog, varphi, thetag) coordinates, where rhog and thetag are geometric cylindrical coordinates in (R,Z)
@@ -76,6 +79,72 @@ def cond_axial_crossing(n: int):
     
     return cond_fn
 
+# %% Performing field line pushing
+
+class FieldlinePusher(eqx.Module):
+    """
+    This is a helper class which sets up diffrax components for pushing field lines.
+
+    TODO: I was hoping this would reduce JIT times by reusing compiled functions, but it seems like the functions
+    get re-jitted sometimes, but not always??? Need to investigate further.
+    """
+    term: diffrax.ODETerm = eqx.field(static=True)
+    solver: diffrax.AbstractSolver = eqx.field(static=True)
+    stepsize_controller: diffrax.AbstractStepSizeController = eqx.field(static=True)
+    root_finder: optx.AbstractRootFinder = eqx.field(static=True)
+    event: diffrax.Event = eqx.field(static=True)
+    saveat: diffrax.SaveAt = eqx.field(static=True)
+
+    def __init__(self):
+        self.term = diffrax.ODETerm(f_fieldline_axial)
+        self.solver = diffrax.Dopri5()
+        self.stepsize_controller = diffrax.PIDController(rtol=1e-8, atol=1e-8)
+        self.root_finder = optx.Newton(rtol=1e-7, atol=1e-7)
+        self.event = diffrax.Event((cond_axial_crossing(1), cond_axial_crossing(-1)), self.root_finder)
+        self.saveat = diffrax.SaveAt(t0=True, t1=True, dense=True)
+
+    @jax.jit
+    @partial(jax.vmap, in_axes=(None, None, 0))
+    def compute_q_and_dtheta(self, eq: Equilibrium, rhog0: Real):
+        # How long should we push the field lines for
+        max_t_final = 10.0 * 2 * jnp.pi * eq.raxis / jnp.max(eq.ff)
+        
+        # Arguments for field line pushing
+        args = FieldlineArgs(eq=eq)
+
+        # Initial state
+        y0 = (rhog0, 0, 0)
+
+        # Integrate forward to find q and dtheta
+        sol = diffrax.diffeqsolve(
+            self.term,
+            self.solver,
+            t0=jnp.array(0.0),
+            t1=jnp.array(max_t_final),
+            dt0=jnp.array(2e-3*max_t_final),
+            y0=y0,
+            args=args,
+            saveat=self.saveat,
+            stepsize_controller=self.stepsize_controller,
+            event=self.event
+        )
+
+        # Extract final state
+        rhog_ys, varphi_ys, thetag_ys = sol.ys
+
+        # Compute q value as number of toroidal turns per poloidal turn. We've completed one poloidal turn, so we divide the toroidal angle by 2pi
+        q = varphi_ys[-1]/(2*jnp.pi)
+
+        # Get the densely evaluated field line points to compute dtheta
+        rhog, varphi, thetag = jax.lax.map(sol.evaluate, jnp.linspace(0, sol.ts[-1], 256, endpoint=False))
+        # Difference between geometric and straight-field-line poloidal angle
+        dtheta = thetag - (varphi / varphi_ys[-1]) * 2 * jnp.pi
+        # Resample dtheta onto a uniform grid in thetag
+        dtheta_resamp = interpax.interp1d(jnp.linspace(0, 2*jnp.pi, 128, endpoint=False), thetag, dtheta, method='cubic2', period=2*jnp.pi)
+
+        return q, dtheta_resamp
+
+
 # %%
 
 class GeometryHandler(eqx.Module):
@@ -83,15 +152,16 @@ class GeometryHandler(eqx.Module):
     interp_amid2: interpax.Interpolator1D
 
     # Interpolators for q(psi) and dtheta(psi, theta_g)
-    psi_surf: Real[ArrayLike, "Nsurf"]      # psi values at which q and dtheta are evaluated
-    q_surf: Real[ArrayLike, "Nsurf"]        # corresponding q values
+    Nsurf: int                              # number of psi surfaces used in constructing q and dtheta profiles      
+    psi_surf: Real[ArrayLike, "{Nsurf}"]    # psi values at which q and dtheta are evaluated
+    q_surf: Real[ArrayLike, "{Nsurf}"]      # corresponding q values
     interp_q: interpax.Interpolator1D       # Interpolator over psi for the safety factor q(psi)
     interp_dtheta: interpax.Interpolator2D  # Interpolator over (psi, theta_g) such that theta = theta_g + interp_dtheta(psi, theta_g)
 
     # Toroidal flux
     interp_torflux: interpax.PPoly
 
-    def __init__(self, eq: Equilibrium):
+    def __init__(self, eq: Equilibrium, pusher: FieldlinePusher, nsurf: int = 192):
         ## First, compute interpolation functions for mapping psi to midplane radius
         # Grid of midplane r points
         rmid = eq.rgrid[eq.rgrid > eq.raxis]
@@ -103,64 +173,15 @@ class GeometryHandler(eqx.Module):
         # Set up the interpolator
         self.interp_amid2 = interpax.Interpolator1D(psi_midplane, (rmid-eq.raxis)**2, method='cubic2')
 
-        ## Next, compute the q profiles and dtheta profiles using diffrax
-        # Set up terms for field line tracing
-        term = diffrax.ODETerm(f_fieldline_axial)
-        solver = diffrax.Dopri5()
-        saveat = diffrax.SaveAt(t0=True, t1=True, dense=True)
-        args = FieldlineArgs(eq=eq)
-        stepsize_controller = diffrax.PIDController(rtol=1e-8, atol=1e-8)
-        root_finder = optx.Newton(rtol=1e-7, atol=1e-7)
-        event = diffrax.Event((cond_axial_crossing(1), cond_axial_crossing(-1)), root_finder)
-        # This gives an estimate of how long we need to follow field lines for; approximately 10 toroidal windings
-        max_t_final = 10.0 * 2 * jnp.pi * eq.raxis / jnp.max(eq.ff)
-
-        # Set up function to compute q and dtheta profiles
-        def compute_q_and_dtheta(psi0):
-            # Initial rhog value from psi
-            rhog0 = jnp.sqrt(self.interp_amid2(psi0))
-            # Initial state
-            y0 = (rhog0, 0, 0)
-
-            # Integrate forward to find q and dtheta
-            sol = diffrax.diffeqsolve(
-                term,
-                solver,
-                t0=0.0,
-                t1=max_t_final,
-                dt0=2e-3*max_t_final,
-                y0=y0,
-                args=args,
-                saveat=saveat,
-                stepsize_controller=stepsize_controller,
-                event=event
-            )
-
-            # Extract final state
-            rhog_ys, varphi_ys, thetag_ys = sol.ys
-
-            # Compute q value as number of toroidal turns per poloidal turn. We've completed one poloidal turn, so we divide the toroidal angle by 2pi
-            q = varphi_ys[-1]/(2*jnp.pi)
-
-            # Get the densely evaluated field line points to compute dtheta
-            rhog, varphi, thetag = jax.lax.map(sol.evaluate, jnp.linspace(0, sol.ts[-1], 256, endpoint=False))
-            # Difference between geometric and straight-field-line poloidal angle
-            dtheta = thetag - (varphi / varphi_ys[-1]) * 2 * jnp.pi
-            # Resample dtheta onto a uniform grid in thetag
-            dtheta_resamp = interpax.interp1d(jnp.linspace(0, 2*jnp.pi, 128, endpoint=False), thetag, dtheta, method='cubic2', period=2*jnp.pi)
-
-            return q, dtheta_resamp
-        
-        # Vectorize over psi0
-        compute_q_and_dtheta_vmap = jax.vmap(compute_q_and_dtheta)
         # Grid of psi values to compute profiles on
-        self.psi_surf = jnp.linspace(0, eq.psix*0.99, 193)[1:]  # avoid axis and separatrix
+        self.Nsurf = nsurf
+        self.psi_surf = jnp.linspace(0, eq.psix*0.98, nsurf+1)[1:]  # avoid axis and separatrix
+        rhog_surf = jnp.sqrt(self.interp_amid2(self.psi_surf))
         # Compute q and dtheta profiles
-        self.q_surf, dtheta_profile = compute_q_and_dtheta_vmap(self.psi_surf)
+        self.q_surf, dtheta_profile = pusher.compute_q_and_dtheta(eq, rhog_surf)
         # Set up interpolators
         self.interp_q = interpax.Interpolator1D(self.psi_surf, self.q_surf, method='cubic2')
         self.interp_dtheta = interpax.Interpolator2D(self.psi_surf, jnp.linspace(0, 2*jnp.pi, 128, endpoint=False), dtheta_profile, period=(None, 2*jnp.pi))
         # Set up toroidal flux interpolator. Note that interp_q_ppoly is the same as self.interp_q but in PPoly form.
         interp_q_ppoly = interpax.CubicSpline(self.psi_surf, self.q_surf)
         self.interp_torflux = interp_q_ppoly.antiderivative()
-
