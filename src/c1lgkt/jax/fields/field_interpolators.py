@@ -18,8 +18,8 @@ from jaxtyping import ArrayLike, Real
 # %% Allowable field signatures
 
 class RotatingFrame(NamedTuple):
-    omega: float  # rotation frequency
-    t0: float     # reference time
+    omega: Real  # rotation frequency
+    t0: Real     # reference time
 
 class ZonalField(NamedTuple):
     interp: interpax.Interpolator1D    # Interpolator1D over psi
@@ -39,9 +39,8 @@ class FieldProvider(eqx.Module):
     @abc.abstractmethod
     def compute_fields(
             self,
-            t: float,
-            r: Real[ArrayLike, "..."], varphi: Real[ArrayLike, "..."], z: Real[ArrayLike, "..."],
-            psi_ev, ff_ev,
-            
+            t, state,
+            psi_and_ff,
+            geom_terms,
             ):
         pass  # to be implemented by subclasses

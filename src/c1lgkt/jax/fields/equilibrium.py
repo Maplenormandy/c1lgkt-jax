@@ -134,7 +134,7 @@ class Equilibrium(eqx.Module):
         outside_lcfs = jnp.logical_or(psi > eq.psix, z < eq.zx)
         ff = jnp.where(outside_lcfs, eq.ff[-1], eq.interp_ff(psi))
 
-        return (-dzpsi / r, -ff / r, drpsi / r)
+        return jnp.array([-dzpsi / r, -ff / r, drpsi / r])
     
     def compute_psi_and_ff(self, r, z):
         """
