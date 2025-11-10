@@ -107,6 +107,7 @@ def f_driftkinetic_midplane(t, state, args: PusherArgs):
     
     ## Magnetic terms
     psi_ev, ff_ev = eq.compute_psi_and_ff(r, z)
+    (psi, psidr, psidz, psidrr, psidrz, psidzz) = psi_ev
     bv, bu, modb, gradmodb, curlbu = eq.compute_geom_terms(r, psi_ev, ff_ev)
     ## Bstar and Bstar parallel
     bstar = bv + (pp.m / pp.z) * curlbu * vll[None, ...]
@@ -117,7 +118,6 @@ def f_driftkinetic_midplane(t, state, args: PusherArgs):
     #dphi = compute_fields(t, r, z, varphi, psi_ev, eq, fields, frame)
     dphi = jnp.zeros_like(gradmodb)
     if args.zonal_fields is not None:
-        (psi, psidr, psidz, psidrr, psidrz, psidzz) = psi_ev
         dzpot = args.zonal_fields(psi, dx=1)
         dphi = jnp.array([psidr * dzpot, jnp.zeros_like(psidr), psidz * dzpot])
     
@@ -149,8 +149,8 @@ def f_driftkinetic_midplane(t, state, args: PusherArgs):
     grad_alpha = jnp.cross(bv, jnp.array([psidr, jnp.zeros_like(psidr), psidz]), axis=0) / (psidr**2 + psidz**2)
 
     # The one form is A \cdot dx + m v_|| b \cdot dx
-    oneformr = pp.z * grad_alpha[0, ...] + pp.m * vll * bu[0, ...]
-    oneformz = pp.z * grad_alpha[2, ...] + pp.m * vll * bu[2, ...]
+    oneformr = pp.z * psi * grad_alpha[0, ...] + pp.m * vll * bu[0, ...]
+    oneformz = pp.z * psi * grad_alpha[2, ...] + pp.m * vll * bu[2, ...]
     dactiondt = (oneformr * drdt + oneformz * dzdt) / (2 * jnp.pi)
 
     # Return everything
