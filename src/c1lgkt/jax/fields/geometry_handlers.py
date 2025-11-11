@@ -96,6 +96,9 @@ class FieldlinePusher(eqx.Module):
     saveat: diffrax.SaveAt = eqx.field(static=True)
 
     def __init__(self):
+        """
+        Set up diffrax components for field line pushing. No arguments needed.
+        """
         self.term = diffrax.ODETerm(f_fieldline_axial)
         self.solver = diffrax.Dopri5()
         self.stepsize_controller = diffrax.PIDController(rtol=1e-8, atol=1e-8)

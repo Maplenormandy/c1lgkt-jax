@@ -52,6 +52,7 @@ class PusherArgs(NamedTuple):
     geom: GeometryHandler | None = None
     pp: ParticleParams | None = None
     zonal_fields: interpax.Interpolator1D | None = None # Temporary; storage for zonally symmetric fields
+    vector_potential_r: interpax.Interpolator2D | None = None # Temporary; storage for vector potential A_r
 
 
 # %% Functions for gyrokinetic particle pushing with zonally symmetric equilibria
@@ -133,25 +134,15 @@ def f_driftkinetic_midplane(t, state, args: PusherArgs):
     dvlldt = -(jnp.sum(bstar*gradh, axis=0) / bstarll) / pp.m
     dmudt = jnp.zeros_like(mu)
 
-    # Compute geometric angles
-    thetag = jnp.arctan2(z - eq.zaxis, r - eq.raxis)
-    rhog2 = (r - eq.raxis)**2 + (z - eq.zaxis)**2
-    thetagr = (eq.zaxis - z) / rhog2
-    thetagz = (r - eq.raxis) / rhog2
-
     # Compute the winding rates
     dthetagdt = ((r - eq.raxis) * dzdt - (z - eq.zaxis) * drdt) / ((r - eq.raxis)**2 + (z - eq.zaxis)**2)
     dthetavlldt = ((vll / pp.vt) * dzdt - (z - eq.zaxis) * dvlldt / pp.vt) / ((z - eq.zaxis)**2 + (vll/pp.vt)**2)
 
-    # To compute the poloidal action, we use the representation A = \psi \nabla \alpha, and B = \nabla \psi \times \nabla \alpha.
-    # We additionally take the gauge condition A \cdot \nabla \psi = 0, which allows us to compute \nabla \alpha using B.
-    # TODO: This representation is singular near the x-point; maybe we'll have to do something about it?
-    grad_alpha = jnp.cross(bv, jnp.array([psidr, jnp.zeros_like(psidr), psidz]), axis=0) / (psidr**2 + psidz**2)
-
     # The one form is A \cdot dx + m v_|| b \cdot dx
-    oneformr = pp.z * psi * grad_alpha[0, ...] + pp.m * vll * bu[0, ...]
-    oneformz = pp.z * psi * grad_alpha[2, ...] + pp.m * vll * bu[2, ...]
-    dactiondt = (oneformr * drdt + oneformz * dzdt) / (2 * jnp.pi)
+    # TODO: There's some sort of sign issue here that I need to think about more carefully?
+    oneformr = pp.z * args.vector_potential_r(r, z) + pp.m * vll * bu[0, ...]
+    oneformz = pp.m * vll * bu[2, ...]
+    dactiondt = -(oneformr * drdt + oneformz * dzdt) / (2 * jnp.pi)
 
     # Return everything
     return (drdt, dvarphidt, dzdt, dvlldt, dmudt, dthetagdt, dthetavlldt, dactiondt)
