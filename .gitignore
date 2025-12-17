@@ -2,6 +2,7 @@
 outputs/
 .vscode/
 bin/scratch/
+data/
 
 
 # Byte-compiled / optimized / DLL files
