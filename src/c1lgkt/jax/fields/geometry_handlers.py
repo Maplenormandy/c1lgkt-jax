@@ -178,7 +178,7 @@ class GeometryHandler(eqx.Module):
 
         # Grid of psi values to compute profiles on
         self.Nsurf = nsurf
-        self.psi_surf = jnp.linspace(0, eq.psix*0.98, nsurf+1)[1:]  # avoid axis and separatrix
+        self.psi_surf = jnp.linspace(0, eq.psix*0.99, nsurf+1)[1:]  # avoid axis and separatrix
         rhog_surf = jnp.sqrt(self.interp_amid2(self.psi_surf))
         # Compute q and dtheta profiles
         self.q_surf, dtheta_profile = pusher.compute_q_and_dtheta(eq, rhog_surf)

@@ -115,7 +115,7 @@ class Equilibrium(eqx.Module):
         self.lcfsrz = kwargs["lcfsrz"]
 
         # Set up the interpolators
-        self.interp_ff = interpax.Interpolator1D(self.psi, self.ff, method='cubic2', extrapolate=True)
+        self.interp_ff = interpax.Interpolator1D(self.psi, self.ff, method='cubic2', extrapolate=(self.ff[0], self.ff[-1]))
         self.interp_psi = interpax.Interpolator2D(self.rgrid, self.zgrid, self.psirz.T, method='cubic2')
 
     def compute_bv(self, r, z):
