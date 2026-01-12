@@ -38,13 +38,13 @@ class MagneticNull(NamedTuple):
     # Hessian of psi at the null
     hess: Real[ArrayLike, "2 2"]
 
-    # Eigendecomposition of the Hessian, H = V W V^T
-    w: Real[ArrayLike, "2"]
-    v: Real[ArrayLike, "2 2"]
-
-    # Q matrix, which gives Sylvester's inertia for the Hessian H = Q D Q^T where D = diag(\pm 1, \pm 1).
+    # Eigendecomposition of the Hessian, H = Q Lambda Q^T
+    lam: Real[ArrayLike, "2"]
     q: Real[ArrayLike, "2 2"]
-    qinv: Real[ArrayLike, "2 2"]
+
+    # S matrix, which gives Sylvester's inertia for the Hessian H = S D S^T where D = diag(\pm 1, \pm 1).
+    s: Real[ArrayLike, "2 2"]
+    sinv: Real[ArrayLike, "2 2"]
 
 class MagneticNullInfo(NamedTuple):
     """
@@ -81,17 +81,17 @@ def _compute_uv(r: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"], nulls: Magneti
     This is the internal function with parameters that specify the locations of the fictional o-points.
     """
     # Local coordinates near the axis
-    eta0 = jnp.tensordot(nulls.axis.q.T, jnp.array([r - nulls.axis.rz[0], z - nulls.axis.rz[1]]), axes=1)
+    eta0 = jnp.tensordot(nulls.axis.s.T, jnp.array([r - nulls.axis.rz[0], z - nulls.axis.rz[1]]), axes=1)
 
     # Local coordinates for fictional o-points. Note unit normalization does not matter.
     eta1 = jnp.array([r - params[0], z - params[1]])
     eta2 = jnp.array([r - params[2], z - params[3]])
 
     # Local coordinates near x-point
-    xi1 = jnp.tensordot(nulls.x1.q.T, jnp.array([r - nulls.x1.rz[0], z - nulls.x1.rz[1]]), axes=1)
-    xi2 = jnp.tensordot(nulls.x2.q.T, jnp.array([r - nulls.x2.rz[0], z - nulls.x2.rz[1]]), axes=1)
+    xi1 = jnp.tensordot(nulls.x1.s.T, jnp.array([r - nulls.x1.rz[0], z - nulls.x1.rz[1]]), axes=1)
+    xi2 = jnp.tensordot(nulls.x2.s.T, jnp.array([r - nulls.x2.rz[0], z - nulls.x2.rz[1]]), axes=1)
 
-    a_norm = nulls.a * jnp.sqrt(jnp.abs(nulls.axis.w[0]))
+    a_norm = nulls.a * jnp.sqrt(jnp.abs(nulls.axis.lam[0]))
 
     # Complex coordinates for the u, v field
     z0 = jnp.tanh(eta0[0,...]/a_norm) + 1j*(eta0[1,...]/a_norm)
@@ -157,8 +157,8 @@ def _objective_uv_params_refine(y: Real[ArrayLike, "8"], args: MagneticNullInfo)
     hth2 = jnp.array(_hess_theta(nulls.x2.rz[0], nulls.x2.rz[1], nulls, y))
 
     # Compute the inertia at the x-points, which we want to take the form [[0, a], [a, 0]]
-    inertia1 = nulls.x1.qinv @ hth1 @ nulls.x1.qinv.T
-    inertia2 = nulls.x2.qinv @ hth2 @ nulls.x2.qinv.T
+    inertia1 = nulls.x1.sinv @ hth1 @ nulls.x1.sinv.T
+    inertia2 = nulls.x2.sinv @ hth2 @ nulls.x2.sinv.T
 
     # Return grad(theta) components and inertia components at both x-points
     return jnp.array([dth1[0], dth1[1], dth2[0], dth2[1], inertia1[0,0], inertia1[1,1], inertia2[0,0], inertia2[1,1]])
@@ -201,14 +201,13 @@ def fn_fieldline(t, y, args: ClebschFieldlineArgs):
     jacobian = (psidr * gradtheta[1] - psidz * gradtheta[0])
     dalpha = bt / jacobian
 
-    return (br/dtheta, bz/dtheta, dalpha/dtheta)
+    return (br/dtheta, bz/dtheta, dalpha)
 
 # %% Clebsch field class
 
-class ClebschMapping(eqx.Module):
+class ThetaMapping(eqx.Module):
     """
-    Class which is responsible for computing and handling Clebsch representations of magnetic fields, B = nabla psi x nabla alpha.
-    This alpha is primarily used for the eikonal representation of microinstabilities in the presence of magnetic shear.
+    Class which is responsible for computing the theta mapping and its derivatives
     """
     ## Info for main magnetic null points.
     nulls: MagneticNullInfo
@@ -220,47 +219,69 @@ class ClebschMapping(eqx.Module):
     #inertia1: Real
     #inertia2: Real
     # Here's the old code that computed inertia values
-    #self.inertia1 = (self.x1.qinv @ jnp.array(self._hess_theta(self.x1.rz[0], self.x1.rz[1], sol_refine.value)) @ self.x1.qinv.T)[0,1]
-    #self.inertia2 = (self.x2.qinv @ jnp.array(self._hess_theta(self.x2.rz[0], self.x2.rz[1], sol_refine.value)) @ self.x2.qinv.T)[0,1]
-
-    ## Interpolator for alpha field
-    interp_alpha: interpax.Interpolator2D
+    #self.inertia1 = (self.x1.sinv @ jnp.array(self._hess_theta(self.x1.rz[0], self.x1.rz[1], sol_refine.value)) @ self.x1.sinv.T)[0,1]
+    #self.inertia2 = (self.x2.sinv @ jnp.array(self._hess_theta(self.x2.rz[0], self.x2.rz[1], sol_refine.value)) @ self.x2.sinv.T)[0,1]
 
     ### Methods
 
     ## Public methods which use internally-stored parameters
 
-    def compute_uv(self, r: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"]) -> tuple[Real[ArrayLike, "N"], Real[ArrayLike, "N"]]:
+    def _compute_uv(self, r: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"]) -> tuple[Real[ArrayLike, "N"], Real[ArrayLike, "N"]]:
         """
         Computes the auxiliary (u,v) fields used to compute theta = arctan2(v,u) using the internally-stored parameters.
         """
         return _compute_uv(r, z, self.nulls, self.uv_params)
     
-    def jac_uv(self, r: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"]) -> tuple[tuple[Real[ArrayLike, "N"], Real[ArrayLike, "N"]], tuple[Real[ArrayLike, "N"], Real[ArrayLike, "N"]]]:
+    def _jac_uv(self, r: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"]) -> tuple[tuple[Real[ArrayLike, "N"], Real[ArrayLike, "N"]], tuple[Real[ArrayLike, "N"], Real[ArrayLike, "N"]]]:
         """
         Computes the Jacobian of the (u,v) fields with respect to (r,z) using the internally-stored parameters.
         """
         return _jac_uv(r, z, self.nulls, self.uv_params)
+    
+    def __call__(self, r: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"]) ->  Real[ArrayLike, "N"]:
+        """
+        Computes theta = arctan2(v,u) using the auxiliary (u,v) fields and the internally-stored parameters.
+        """
+        u, v = self._compute_uv(r, z)
+        return jnp.arctan2(v, u)
 
-    def grad_theta(self, r: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"]) -> tuple[Real[ArrayLike, "N"], Real[ArrayLike, "N"]]:
+    def grad(self, r: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"]) -> tuple[Real[ArrayLike, "N"], Real[ArrayLike, "N"]]:
         """
         Computes the smoothly-varying gradient of theta = arctan2(v,u) (i.e. across the branch cut) with respect to (r,z)
         using the auxiliary (u,v) fields and the internally-stored parameters.
         """
         return _grad_theta(r, z, self.nulls, self.uv_params)
 
-    def hess_theta(self, r: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"]) -> tuple[tuple[Real[ArrayLike, "N"], Real[ArrayLike, "N"]], tuple[Real[ArrayLike, "N"], Real[ArrayLike, "N"]]]:
+    def hessian(self, r: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"]) -> tuple[tuple[Real[ArrayLike, "N"], Real[ArrayLike, "N"]], tuple[Real[ArrayLike, "N"], Real[ArrayLike, "N"]]]:
         """
         Computes the Hessian of theta = arctan2(v,u) with respect to (r,z) using the auxiliary (u,v) fields and the internally-stored parameters.
         """
         return _hess_theta(r, z, self.nulls, self.uv_params)
         
+# %% Class for Clebsch field?
 
+class ClebschMapping(eqx.Module):
+    """
+    Class which is responsible for computing the Clebsch field (i.e. alpha mapping) and its derivatives as a function
+    of (psi, theta), as well as providing weight functions to control branch cut behavior
+    """
+    interp_alpha: interpax.Interpolator2D
+
+    def __call__(self, psi: Real[ArrayLike, "N"], theta: Real[ArrayLike, "N"]) -> tuple[Real[ArrayLike, "Nbranch N"], Real[ArrayLike, "Nbranch N"]]:
+        """
+        Computes alpha(psi, theta), sampled on the primary as well the +/-2pi branch cuts (in that order),
+        along with weight functions that indicate the desired branch cut behavior. Nbranch is the number of branches (3), and N is the number of points.
+        """
+        ## First, sample alpha
+        alpha = self.interp_alpha(psi, theta)
+        alpha_p = self.interp_alpha(psi, theta + 2*jnp.pi)
+        alpha_n = self.interp_alpha(psi, theta - 2*jnp.pi)
+
+        ## For now, let's just return uniform weights;
+        return jnp.stack([alpha, alpha_p, alpha_n], axis=0), jnp.ones((3, ) + psi.shape)
         
 
 # %% Clebsch field builder class
-        
-        
 
 class ClebschMappingBuilder(eqx.Module):
     """
@@ -311,7 +332,7 @@ class ClebschMappingBuilder(eqx.Module):
         # Ensure right-handedness
         v = v.at[:, 1].set(jnp.sign(jnp.linalg.det(v)) * v[:, 1])
 
-        # Compute Q for Sylvester's inertia
+        # Compute Q for Sylvester's inertia; i.e. H = Q D Q^T where D = diag(\pm 1, \pm 1)
         q = v @ jnp.diag(jnp.sqrt(jnp.abs(w)))
         qinv = jnp.linalg.inv(q)
 
@@ -319,7 +340,7 @@ class ClebschMappingBuilder(eqx.Module):
             rz=rz_null,
             psi=eq.interp_psi(rz_null[0], rz_null[1]),
             hess=hess,
-            w=w, v=v, q=q, qinv=qinv
+            lam=w, q=v, s=q, sinv=qinv
         )
     
     def _find_uv_params(self, nulls: MagneticNullInfo) -> UvParams:
@@ -405,7 +426,7 @@ class ClebschMappingBuilder(eqx.Module):
         # Join together the solution and return it
         return jnp.concatenate([alpha_bak[::-1], alpha_fwd[:]], axis=0)
 
-    def clebsch_from_equilibrium(self, eq: Equilibrium) -> ClebschMapping:
+    def clebsch_from_equilibrium(self, eq: Equilibrium) -> tuple[ThetaMapping, ClebschMapping]:
         ## First, compute the locations of the main magnetic nulls.
         axis = self._find_magnetic_null(jnp.array([eq.raxis, eq.zaxis]), eq)
         x1 = self._find_magnetic_null(jnp.array([eq.rx, eq.zx]), eq)
@@ -421,6 +442,12 @@ class ClebschMappingBuilder(eqx.Module):
         ## Next, compute the parameters for the (u,v) field such that grad(theta) = 0 at the x-points
         uv_params = self._find_uv_params(nulls)
 
+        ## Construct the theta_map object
+        theta_map = ThetaMapping(
+            nulls=nulls,
+            uv_params=uv_params,
+        )
+
         ## Finally, we want to compute alpha on a grid of psi and theta values for interpolation later
         r0 = jnp.sqrt(jnp.linspace(0.01, 0.99, 512)) * (eq.rmax - nulls.axis.rz[0]) + (nulls.axis.rz[0])
         z0 = jnp.full_like(r0, nulls.axis.rz[1])
@@ -430,11 +457,11 @@ class ClebschMappingBuilder(eqx.Module):
 
         interp_alpha = interpax.Interpolator2D(psi_eval, self.theta_eval, alpha_eval, method='monotonic', extrap=True)
 
-        return ClebschMapping(
-            nulls=nulls,
-            uv_params=uv_params,
+        clebsch = ClebschMapping(
             interp_alpha=interp_alpha
         )
+
+        return theta_map, clebsch
 
     def __init__(self):
         """

@@ -1,0 +1,355 @@
+\documentclass[]{article}
+
+\usepackage{fullpage}
+\usepackage{physics}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{url}
+\usepackage{comment}
+
+%opening
+\title{Implementation Notes for Gyrokinetic Particle Pusher}
+\author{Norman M. Cao}
+
+\begin{document}
+
+\maketitle
+
+\section{Equations of motion and geometry}
+
+\subsection{Gyrokinetic characteristic equations (electrostatic)}
+We aim to push particles in electrostatic gyrokinetics.
+The equations of motion are given by
+\begin{subequations}
+	\begin{gather}
+		B_\parallel^* \dot{\vb{R}} = \frac{1}{q} \vu{b} \times \nabla H + v_\parallel \vb{B}^* \\
+		B_\parallel^* \dot{p}_\parallel = -\vb{B}^* \cdot \nabla H \\
+		\dot{\mu} = 0
+	\end{gather}
+\end{subequations}
+With some definitions
+\begin{subequations}
+	\begin{gather}
+		\vu{b} := \vb{B} / B \\
+		\vb{B}^* := \vb{B} + \nabla \times (p_\parallel \vu{b} / q) \\
+		B_\parallel^* := \vu{b} \cdot \vb{B}
+	\end{gather}
+\end{subequations}
+\begin{subequations}
+	\begin{gather}
+		H = p_\parallel^2 / 2 m + \mu B + q \mathcal{J}[\Phi] \\
+		v_\parallel := \partial_{p_\parallel} H = p_\parallel / m
+	\end{gather}
+\end{subequations}
+and \(m,q\) are the species mass and charge respectively.
+
+\subsection{Gyrokinetic characteristic equations (electromagnetic)}
+\begin{subequations}
+	\begin{gather}
+		B_\parallel^* \dot{\vb{R}} = \frac{1}{q_s} \vu{b} \times \pdv{H}{\vb{R}} + \frac{\vb{B}^*}{m_s} \pdv{H}{u_\parallel} \\
+		B_\parallel^* \dot{u}_\parallel = - \frac{\vb{B}^*}{m_s} \cdot \pdv{H}{\vb{R}} - \frac{q_s B_\parallel^*}{m_s} \pdv{A^{(s)}_\parallel}{t}
+	\end{gather}
+\end{subequations}
+\begin{subequations}
+	\begin{gather}
+		H = \frac{1}{2 m_s} (m_s u_\parallel - q_s A_\parallel^{(h)})^2 + \mu B + q_s \phi \\
+		\pdv{H}{\vb{R}} = \mu \nabla B + q_s \nabla \phi - \frac{q_s}{m_s}(m_s u_\parallel - q_s A_\parallel^{(h)}) \nabla A_{\parallel}^{(h)} \\
+		\pdv{H}{u_\parallel} = m_s u_\parallel - q_s A_{\parallel}^{(h)} \\
+		\vb{B}^* = \vb{B} + \nabla \times ([m_s u_\parallel/ q_s + A_\parallel^{(s)}] \vu{b})
+	\end{gather}
+\end{subequations}
+
+\subsection{Cylindrical coordinates}
+We primarily work in a right-handed \((R,\varphi,Z)\) cylindrical coordinate system.
+Thus, \(\varphi\) points into the \((R,Z)\) plane.
+Recall that for a path \(\vb{R} = (R(t), \varphi(t), Z(t))\), we have that
+\begin{gather*}
+	\dot{\vb{R}} = \dot{R} \vu{R} + \dot{Z} \vu{Z} + R \dot{\varphi} \vu*{\varphi} \\
+	\ddot{\vb{R}} = (\ddot{R} - R \dot{\varphi}^2) \vu{R} + \ddot{Z} \vu{Z} + (R \ddot{\varphi} + 2 \dot{R} \dot{\varphi}) \vu*{\varphi}
+\end{gather*}
+Typically we will work with the orthonormal basis of unit vectors \((\vu{R}, \vu*{\varphi}, \vu{Z})\).
+From the above expressions, the velocity acts on coordinates as
+\begin{equation*}
+	\dot{R} = \dot{\vb{R}} \cdot \vu{R} \qquad
+	\dot{Z} = \dot{\vb{R}} \cdot \vu{Z} \qquad
+	\dot{\varphi} = (\dot{\vb{R}} \cdot \vu*{\varphi}) / R
+\end{equation*}
+then, the acceleration acts on components of the velocity vector (in the orthonormal basis) as
+\begin{gather*}
+	 \\
+	(\dot{\vb{R}} \cdot \vu{R})' = \ddot{\vb{R}}\cdot \vu{R} + R \dot{\varphi}^2 \\
+	(\dot{\vb{R}} \cdot \vu{Z})' = \ddot{\vb{R}} \cdot \vu{Z} \\
+	(\dot{\vb{R}} \cdot \vu*{\varphi})' = \dot{R} \dot{\varphi} + R \ddot{\varphi} = \ddot{\vb{R}} \cdot \vu*{\varphi} - \dot{R}\dot{\varphi}
+\end{gather*}
+
+\subsection{Magnetic field}
+We use the following representation of the magnetic field and current
+\begin{gather*}
+	\vb{B} = F(\psi) \nabla \varphi + \nabla \varphi \times \nabla \psi = \frac{F(\psi) \vu*{\varphi} + \vu*{\varphi} \times \nabla \psi}{R} \\
+	\nabla \times \vb{B} = F' \nabla \psi \times \nabla \varphi + \nabla \times (\nabla \varphi \times \nabla \psi)
+\end{gather*}
+where \(\psi\) is the poloidal flux.
+Note the second term in the current can be evaluated using an in-plane curl
+
+It's useful to have the following representations for certain terms in the gyrokinetic equation:
+\begin{gather*}
+	\nabla B = \frac{\nabla(RB) - B \nabla R}{R} \\
+	2 RB \nabla(RB) = \nabla(R^2B^2) = \nabla(F^2 + |\nabla\psi|^2) = 2 F' \nabla \psi + 2 \operatorname{Hess}[\psi] \nabla \psi \\
+	\nabla \times \vu{b} = \frac{B (\nabla \times \vb{B}) - (\nabla B) \times \vb{B}}{B^2}
+\end{gather*}
+note that these can be written purely in terms of analytic derivatives of \(\psi(R,Z)\) and \(F(\psi)\).
+
+\section{Eikonal Representation of Fields}
+
+\subsection{Flux Coordinates}
+First, we define the flux coordinates that we adopt in order to represent modes.
+We use \(\psi\) as the radial coordinate and \(\varphi\) as the toroidal coordinate.
+Now, we define a binormal coordinate \(\theta\) by a ``UV mapping'' strategy.
+Namely, we define fields \((u(R,Z), v(R,Z))\) such that \(\theta = \arctan(v/u)\).
+These UV fields are defined to satisfy the following:
+\begin{enumerate}
+	\item \(u=v=0\) at the magnetic axis
+	\item \(\nabla \theta = 0\) at the two primary magnetic X-points
+	\item At each magnetic null, the Hessian \(H[\psi]\) is congruent to a diagonal matrix \(D\) with entries \(\pm 1\), \(H[\psi] = S D S^T\); this is Sylvester's law of inertia. We constrain the Hessian \(H[\theta] = S A S^T\) where \(A_{11} = A_{22} = 0\) and \(A_{12}=A_{21} = a\).
+\end{enumerate}
+These help ensure that \(\theta\) acts as a good ``conjugate coordinate'' to \(\psi\).
+
+\subsection{Clebsch Representation of Magnetic Field}
+
+Consider a Clebsch representation of the magnetic field
+\begin{equation*}
+	\vb{B} = \nabla \psi \times \nabla \alpha
+\end{equation*}
+Any function \(S(\psi,\alpha)\) automatically satisfies \(\vb{B} \cdot \nabla S = 0\).
+We can choose \(\alpha = \alpha_\Phi(\psi,\theta) - \varphi\).
+Note that \(\alpha_\Phi\) is the component related to the toroidal flux.
+
+To compute \(\alpha_\Phi\), notice that
+\begin{equation*}
+	\vb{B} = \pdv{\alpha_\Phi}{\theta} \nabla \psi \times \nabla \theta + \nabla \varphi \times \nabla \psi
+\end{equation*}
+In other words,
+\begin{equation*}
+	\pdv{\alpha_\Phi}{\theta} = \frac{\vb{B} \cdot \nabla \varphi}{(\nabla \psi \times \nabla \theta) \cdot \nabla \varphi}
+\end{equation*}
+Thus, by integrating along curves of constant \(\psi\) and varying \(\theta\), it is possible to compute \(\alpha_\Phi\).
+
+We make a brief remark about singularities.
+Let \(\vb{x} = (R-R_0, Z-Z_0)\), and let \(\vb*{\xi} = S^T \vb{x}\).
+Near poloidal magnetic field nulls, we have
+\begin{gather*}
+	\psi \approx \frac{1}{2} \vb{x}^T H[\psi] \vb{x} = \frac{1}{2} \vb*{\xi}^T D \vb*{\xi} \\
+	\theta \approx \frac{1}{2} \vb{x}^T H[\theta] \vb{x} = \frac{1}{2} \vb*{\xi}^T A \vb*{\xi}
+\end{gather*}
+
+
+\section{\(C^1\) interpolation on unstructured meshes}
+
+\subsection{Field line tracing}
+Let \(\vec{R}_B(R,Z;\varphi) = (R_B(...), Z_B(...))\) be the motion of the field-line trace starting at \((R,Z)\) on a poloidal plane, parameterized by the toroidal angle \(\varphi\) moved along the field line.
+
+\(\vec{R}_B\) satisfies the ODE
+\begin{equation*}
+	\dv{\vec{R}_B}{\varphi} = \vec{b}_p \circ \vec{R}_B := \eval{\frac{R\vb{B}_p}{B_t}}_{\vec{R}_B} = \eval{\frac{R \vu*{\varphi} \times \nabla \psi}{F(\psi)}}_{\vec{R}_B}; \qquad
+	\vec{R}_B(R,Z;0) = (R,Z)
+\end{equation*}
+This ODE is essentially a reparameterization of the magnetic field line ODEs with \(\varphi\) as time.
+For \(\dv{\varphi}\) we think of \((R,Z)\) as being parameters.
+These ODEs have an associated variational equation
+\begin{equation*}
+	\dv{[D\vec{R}_B]}{\varphi} = ([D\vec{b}_p] \circ \vec{R}_B) [D\vec{R}_B]; \qquad D\vec{R}_B(R,Z;0) = I_{2\times2}
+\end{equation*}
+here we think of \(D\) as the differential in \((R,Z)\) with \(\varphi\) as a parameter, that is:
+\begin{equation*}
+	D\vec{b}_p = \begin{bmatrix}
+		\partial_R(\vec{b}_p \cdot \vu{R}) & \partial_Z(\vec{b}_p \cdot \vu{R}) \\
+		\partial_R(\vec{b}_p \cdot \vu{Z}) & \partial_Z(\vec{b}_p \cdot \vu{Z})
+	\end{bmatrix}
+\end{equation*}
+\begin{equation*}
+	D\vec{R}_B = \begin{bmatrix}
+		\partial_R R_B & \partial_Z R_B \\
+		\partial_R Z_B & \partial_Z Z_B
+	\end{bmatrix}
+\end{equation*}
+
+\subsection{Field-aligned interpolation}
+Suppose we are trying to interpolate \(\phi(R,\varphi,Z)\) knowing its values on some equally spaced poloidal planes \(\phi_i(R,Z)\).
+This can be accomplished by
+\begin{equation*}
+	\phi(R,\varphi,Z) = \sum_{i} p_i(\varphi) \phi_i(\vec{R}_B(R,Z;\varphi_i-\varphi))
+\end{equation*}
+here \(p_i\) are some piecewise polynomial basis functions.
+We can compute its gradient by
+\begin{equation*}
+	\nabla \phi = \sum_{i} \left[p' (\phi_i \circ \vec{R}_B) \nabla \varphi + p_i \nabla (\phi_i \circ \vec{R}_B)\right]
+\end{equation*}
+Using the chain rule,
+\begin{align*}
+	\nabla (\phi_i \circ \vec{R}_B) &=
+	\begin{bmatrix}
+		\nabla R & \nabla Z
+	\end{bmatrix}
+	[D(\phi_i \circ \vec{R}_B)]^T
+	-
+	\nabla \varphi \left(\dv{(\phi_i \circ \vec{R}_B)}{\varphi}\right) \\
+	&=
+	\begin{bmatrix}
+		\vu{R} & \vu{Z}
+	\end{bmatrix}
+	[D \vec{R}_B]^T
+	[[\nabla \phi_i] \circ \vec{R}_B]
+	-
+	\frac{\vu*{\varphi}}{R}\left([[\nabla \phi_i]\circ \vec{R}_B] \cdot \dv{\vec{R}_B}{\varphi}\right)
+\end{align*}
+Note that it's possible to show that \(\vb{B} \cdot \nabla (\phi_i \circ \vec{R}_B) = 0\).
+
+\subsection{Choice of basis functions}
+
+Traditional cubic spline interpolation, which minimizes `bending' and \(C^2\) continuity, has polynomial coefficients which are computed by solving a linear system involving all of the data points as well as boundary conditions.
+Instead we rely on polynomial splines which involve only the 4 points in the neighborhood of any \(\varphi\), and generally enforce \(C^1\) continuity at the nodes.
+
+Two options are considered.
+The first is cubic Hermite interpolation, with an array of polynomial coefficients
+\begin{equation*}
+	p = \begin{bmatrix}
+		0 & -1/2 & 1 & -1/2 \\
+		1 & 0 & -5/2 & 3/2 \\
+		0 & 1/2 & 2 & -3/2 \\
+		0 & 0 & -1/2 & 1/2
+	\end{bmatrix}
+\end{equation*}
+where \(p_i(t) = \sum_{j=0}^{3} p_{ij} t^j\) (here the array entries are being 0-indexed).
+This scheme exactly interpolates the nodes and also enforces \(C^1\) continuity at the nodes with a value of the derivative given by the centered difference of the adjacent two nodes.
+
+The second is a quadratic smoothing spline,
+\begin{equation*}
+	p = \begin{bmatrix}
+		1/4 & -1/2 & 1/4 \\
+		1/2 & 0 & -1/4 \\
+		1/4 & 1/2 & -1/4 \\
+		0 & 0 & 1/4
+	\end{bmatrix}
+\end{equation*}
+This scheme can be thought of as the anti-derivative of linear interpolation on the derivative, computed via centered difference, while enforcing \(C^1\) continuity at the nodes.
+The quadratic dependence sacrifices exact interpolation at the nodes in exchange for a derivative with less oscillations.
+
+Finally we remark that parallel noise seems to be non-negligible; in theoretical cases, a Lanczos filter is applied along the field line to smooth out these high-frequency parallel fluctuations.
+
+
+\subsection{Interpolation on poloidal planes}
+
+Interpolation on poloidal planes uses rHCT elements, which are \(C^1\) elements that minimize a `bending energy'.
+The code is essentially a fork of the matplotlib \texttt{CubicTriInterpolator}\footnote{\url{https://matplotlib.org/stable/api/tri_api.html#matplotlib.tri.CubicTriInterpolator}} with a few optimizations.
+
+\section{Extraction of Ballooning Coefficients}
+
+\subsection{Straight Field-line Coordinates}
+On the closed flux surfaces, let \(\theta_g\) be the geometric poloidal angle relative to the magnetic axis, with \(\theta_g = 0\) representing the outboard midplane.
+Using \(F(\psi) = B_t / R\), we can compute the relationship between the straight field-line angle \(\theta\) in terms of \(\theta_g\) by
+\begin{gather*}
+	\theta = \frac{1}{q(\psi)} \int_{\theta_0(\psi)}^{\theta_g} \frac{F(\psi)}{B_p(\psi,\theta_g')} \ell'(\theta_g') \dd{\theta_g'} \\
+	q(\psi) = \frac{1}{2\pi} \int_{0}^{2\pi} \frac{F(\psi)}{B_p(\psi,\theta_g')} \ell'(\theta_g') \dd{\theta_g'}
+\end{gather*}
+where \(\ell'(\theta_g)\) is the derivative of the arclength of the field line along the flux surface with respect to \(\theta_g\), and \(\theta_0(\psi)\) is the arbitrary offset on each flux surface where \(\theta=0\) lies.
+An easy choice is \(\theta_0(\psi) = 0\), which results in \(\theta=0\) being the outboard midplane.
+This relationship is then numerically inverted to get \(\theta\).
+
+\subsection{Ballooning Transform}
+
+Moving to flux coordinates \((\psi, \zeta, \theta)\) with \(\zeta=\varphi\), we can always write
+\begin{equation*}
+	\phi(R,\varphi,Z) = \sum_{n=-\infty}^{\infty} e^{i n \zeta} \phi_n(\psi,\theta)
+\end{equation*}
+We can move to the covering space \(\theta \mapsto \eta\), let \(\rho = nq\), and introduce the eikonal factor
+\begin{gather*}
+	\phi_n(\psi, \theta) = \sum_{\ell=-\infty}^{\infty} \hat{\phi}_n(\psi, \eta + 2 \pi \ell) \\
+	\hat{\phi}_n(\psi, \eta) = e^{-i\rho\eta} f_n(\rho,\eta) \\
+	f_n(\rho, \eta) = \int_{-\infty}^{\infty} \dd{\theta_k} e^{i\rho\theta_k} \tilde{f}_n(\theta_k, \theta)
+\end{gather*}
+the complete representation is then
+\begin{equation*}
+	\phi(R,\varphi,Z) = \sum_{n=-\infty}^{\infty} \sum_{\ell = -\infty}^{\infty} \int_{-\infty}^{\infty} \dd{\theta}_k e^{in(\zeta - q(\eta - \theta_k + 2 \pi \ell))} \tilde{f}_n(\theta_k, \theta + 2 \pi \ell)
+\end{equation*}
+
+Now, if we had an exact ballooning symmetry, we would have for a fixed parameter \(\theta_k\) (related to the radial wavenumber),
+\begin{equation*}
+	f_n(\rho,\eta) = e^{i\rho\theta_k} \tilde{F}_n(\eta)
+\end{equation*}
+This is exactly analogous to \(f(x) = \tilde{F} e^{ikx}\) with \(k\) is a fixed parameter.
+Our goal is to find an approximation to \(\tilde{f}_n\).
+
+Taking \(S=n(\zeta - q \eta)\), we can compute
+\begin{gather*}
+	\nabla (e^{iS} f_n(\rho, \eta)) = e^{iS} \left[i\nabla S f_n + \partial_q f_n \nabla q + \partial_\eta f_n \nabla \eta\right] \\
+	\nabla S = n(\nabla \zeta - q \nabla \eta - \eta \nabla q)
+\end{gather*}
+
+Note that in the ballooning representation, we also have
+\begin{gather*}
+	\tilde{S} = n(\zeta - q(\eta - \theta_k)) \\
+	\nabla(e^{i\tilde{S}} \tilde{f}_n(\theta_k, \eta)) = e^{i\tilde{S}} (i\nabla \tilde{S} \tilde{f}_n + \partial_\eta \tilde{f}_n \nabla \eta) \\
+	\nabla \tilde{S} = n(\nabla \zeta - q \nabla \eta - (\eta - \theta_k) \nabla q)
+\end{gather*}
+
+Note furthermore we have the gyroaverage operator taking the eikonal approximation
+\begin{gather*}
+	\ev{e^{i\tilde{S}}\tilde{f}_n(\theta_k, \eta)} \approx e^{i\tilde{S}} J_0(k_\perp \rho) \tilde{f}_n(\theta_k, \eta) \\
+	\vb{k}_\perp = \nabla \tilde{S}
+\end{gather*}
+
+\subsection{Up-down Symmetry}
+One final thing we do is to modify \(\theta_0\) to account for up-down symmetry.
+We compute \(v_r = \vb{v}_D \cdot \vu{r}\) and \(v_y = \vb{v}_D \cdot \vu{y}\) where \(\vu{y} = \vu{r} \times \vu{b}\) is the binormal vector.
+We take \(\theta_0 = \operatorname{argmax}_{\theta} v_y\).
+
+\subsection{Approximation by Gauss-Hermite Functions}
+
+Finally, we approximate \(f_n(\rho,\eta)\) (equivalently \(\tilde{f}_n(\theta_k, \eta)\)) with complex-amplitude Gauss-Hermite functions.
+
+Note that naively, if we try to extract \(\phi_n\) from the data \(\phi\), aliasing issues cause pollution in the toroidal mode number spectrum.
+Instead, we first upsample the toroidal resolution using field-aligned interpolation (rather than numerically following field lines, we use constant \(\alpha=\zeta - q \theta\)), perform the FFT, then truncate in frequency space.
+Additionally, we apply a Lanczos filter in the parallel direction to reduce high-frequency parallel noise -- not sure what its source is.
+
+To compute gradients of \(\phi\), note the coordinate transform
+
+Define \(v_D^q,v_D^\alpha\) by
+\begin{equation*}
+	\vb{v}_D\cdot \nabla = v_D^q \partial_q + v_D^\alpha \partial_\alpha = v_D^R \partial_R + v_D^Z \partial_Z + v_D^\varphi \partial_\varphi
+\end{equation*}
+Note that \(v_D^\varphi = \vb{v}_D \cdot \vu*{\varphi} / R\).
+
+We have the following coordinate transforms
+\begin{equation*}
+	q = q(\psi) \qquad \alpha = \zeta - q \theta \qquad \eta = \theta
+\end{equation*}
+\begin{equation*}
+	\begin{bmatrix}
+		\dd{q} \\ \dd{\alpha} \\ \dd{\eta}
+	\end{bmatrix}
+	=
+	\begin{bmatrix}
+		q' & 0 & 0 \\
+		-q' \theta & 1 & -q \\
+		0 & 0 & 1
+	\end{bmatrix}
+	\begin{bmatrix}
+		\dd{\psi} \\ \dd{\zeta} \\ \dd{\theta}
+	\end{bmatrix}
+	=
+	\begin{bmatrix}
+		q' & 0 & 0 \\
+		-q' \theta & 1 & -q \\
+		0 & 0 & 1
+	\end{bmatrix}
+	\begin{bmatrix}
+		\psi_R & 0 & \psi_Z \\
+		0 & 1 & 0 \\
+		\theta_R & 0 & \theta_Z
+	\end{bmatrix}
+	\begin{bmatrix}
+		\dd{R} \\ \dd{\varphi} \\ \dd{Z}
+	\end{bmatrix}
+\end{equation*}
+
+\end{document}
