@@ -72,13 +72,13 @@ def _objective_magnetic_null(y: Real[ArrayLike, "2"], args: Equilibrium) -> Real
 
 type UvParams = Real[ArrayLike, "8"]
 
-def _compute_uv(r: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"], nulls: MagneticNullInfo, params: UvParams) -> tuple[Real[ArrayLike, "N"], Real[ArrayLike, "N"]]:
+def _compute_uv(r: Real, z: Real, nulls: MagneticNullInfo, params: UvParams) -> tuple[Real, Real]:
     """
     Computes the auxiliary (u,v) fields used to compute theta = arctan2(v,u). The strategy is to place zeros of a
     complex(-ish) function f(z) = (z-z0) (z-z1) (z-z2), then compute u = Re(f(z)) and v = Im(f(z)).
     
     z0 corresponds to the magnetic axis, while z1 and z2 correspond to the fictional o-points.
-    This is the internal function with parameters that specify the locations of the fictional o-points.
+    This is the internal, unbatched function with parameters that specify the locations of the fictional o-points.
     """
     # Local coordinates near the axis
     eta0 = jnp.tensordot(nulls.axis.s.T, jnp.array([r - nulls.axis.rz[0], z - nulls.axis.rz[1]]), axes=1)
@@ -94,31 +94,26 @@ def _compute_uv(r: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"], nulls: Magneti
     a_norm = nulls.a * jnp.sqrt(jnp.abs(nulls.axis.lam[0]))
 
     # Complex coordinates for the u, v field
-    z0 = jnp.tanh(eta0[0,...]/a_norm) + 1j*(eta0[1,...]/a_norm)
-    z1 = eta1[0,...] + 1j*eta1[1,...] + (params[4] + 1j*params[5]) * jnp.exp(-0.5 * (xi1[0,...]**2 + xi1[1,...]**2))
-    z2 = eta2[0,...] + 1j*eta2[1,...] + (params[6] + 1j*params[7]) * jnp.exp(-0.5 * (xi2[0,...]**2 + xi2[1,...]**2))
+    z0 = jnp.tanh(eta0[0]/a_norm) + 1j*(eta0[1]/a_norm)
+    z1 = eta1[0] + 1j*eta1[1] + (params[4] + 1j*params[5]) * jnp.exp(-0.5 * (xi1[0]**2 + xi1[1]**2))
+    z2 = eta2[0] + 1j*eta2[1] + (params[6] + 1j*params[7]) * jnp.exp(-0.5 * (xi2[0]**2 + xi2[1]**2))
 
     uv = z0 * z1 * z2
 
     return jnp.real(uv), jnp.imag(uv)
 
-# Jacobian of (u,v) with respect to (r,z)
-_jac_uv = jax.jacfwd(_compute_uv, argnums=(0,1))
 
-def _grad_theta(r: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"], nulls: MagneticNullInfo, params: UvParams) -> tuple[Real[ArrayLike, "N"], Real[ArrayLike, "N"]]:
+def _grad_theta(r: Real, z: Real, nulls: MagneticNullInfo, params: UvParams) -> tuple[Real, Real]:
     """
     Computes the smoothly-varying gradient of theta = arctan2(v,u) (i.e. across the branch cut) with respect to (r,z)
-    using the auxiliary (u,v) fields
+    using the auxiliary (u,v) fields.
+
+    This is the internal, unbatched function with parameters that specify the locations of the fictional o-points.
     """
-    u, v = _compute_uv(r, z, nulls, params)
-    duv_drz = _jac_uv(r, z, nulls, params)
-
-    dudr, dudz = duv_drz[0]
-    dvdr, dvdz = duv_drz[1]
-
+    (u, v), vjp_fun = jax.vjp(lambda r_in, z_in: _compute_uv(r_in, z_in, nulls, params), r, z)
     uv2 = u**2 + v**2
 
-    return ((u * dvdr - v * dudr) / uv2, (u * dvdz - v * dudz) / uv2)
+    return vjp_fun((-v / uv2, u / uv2))
 
 # Hessian of theta
 _hess_theta = jax.jacfwd(_grad_theta, argnums=(0, 1))
@@ -198,6 +193,7 @@ def fn_fieldline(t, y, args: ClebschFieldlineArgs):
 
     dtheta = br * gradtheta[0] + bz * gradtheta[1]
 
+    # Note: jacobian is actually r * dtheta; noting that dvarphi = bt / r, dalpha = dvarphi / dtheta
     jacobian = (psidr * gradtheta[1] - psidz * gradtheta[0])
     dalpha = bt / jacobian
 
@@ -230,13 +226,7 @@ class ThetaMapping(eqx.Module):
         """
         Computes the auxiliary (u,v) fields used to compute theta = arctan2(v,u) using the internally-stored parameters.
         """
-        return _compute_uv(r, z, self.nulls, self.uv_params)
-    
-    def _jac_uv(self, r: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"]) -> tuple[tuple[Real[ArrayLike, "N"], Real[ArrayLike, "N"]], tuple[Real[ArrayLike, "N"], Real[ArrayLike, "N"]]]:
-        """
-        Computes the Jacobian of the (u,v) fields with respect to (r,z) using the internally-stored parameters.
-        """
-        return _jac_uv(r, z, self.nulls, self.uv_params)
+        return jax.vmap(_compute_uv, in_axes=(0,0,None,None))(r, z, self.nulls, self.uv_params)
     
     def __call__(self, r: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"]) ->  Real[ArrayLike, "N"]:
         """
@@ -250,13 +240,13 @@ class ThetaMapping(eqx.Module):
         Computes the smoothly-varying gradient of theta = arctan2(v,u) (i.e. across the branch cut) with respect to (r,z)
         using the auxiliary (u,v) fields and the internally-stored parameters.
         """
-        return _grad_theta(r, z, self.nulls, self.uv_params)
+        return jax.vmap(_grad_theta, in_axes=(0,0,None,None))(r, z, self.nulls, self.uv_params)
 
     def hessian(self, r: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"]) -> tuple[tuple[Real[ArrayLike, "N"], Real[ArrayLike, "N"]], tuple[Real[ArrayLike, "N"], Real[ArrayLike, "N"]]]:
         """
         Computes the Hessian of theta = arctan2(v,u) with respect to (r,z) using the auxiliary (u,v) fields and the internally-stored parameters.
         """
-        return _hess_theta(r, z, self.nulls, self.uv_params)
+        return jax.vmap(_hess_theta, in_axes=(0,0,None,None))(r, z, self.nulls, self.uv_params)
         
 # %% Class for Clebsch field?
 
@@ -377,7 +367,7 @@ class ClebschMappingBuilder(eqx.Module):
         # First, we want to integrate to theta = 0. Note that time is parameterized by theta
         sol_theta0 = diffrax.diffeqsolve(
             self.term, self.solver,
-            t0=theta0, t1=0.0, dt0=5e-4, y0=y0,
+            t0=theta0, t1=0.0, dt0=5e-3, y0=y0,
             args=args,
             stepsize_controller=self.stepsize_controller,
             event=self.event,
@@ -391,7 +381,7 @@ class ClebschMappingBuilder(eqx.Module):
         # Next, we want to integrate to \pm 4 pi in theta to get a full field line
         sol_fwd = diffrax.diffeqsolve(
             self.term, self.solver,
-            t0=0.0, t1=4*jnp.pi+1e-3, dt0=5e-4, y0=y0,
+            t0=0.0, t1=4*jnp.pi+1e-3, dt0=5e-2, y0=y0,
             args=args,
             saveat=self.saveats[0],
             stepsize_controller=self.stepsize_controller,
@@ -401,7 +391,7 @@ class ClebschMappingBuilder(eqx.Module):
         )
         sol_bak = diffrax.diffeqsolve(
             self.term, self.solver,
-            t0=0.0, t1=-4*jnp.pi-1e-3, dt0=-5e-4, y0=y0,
+            t0=0.0, t1=-4*jnp.pi-1e-3, dt0=-5e-2, y0=y0,
             args=args,
             saveat=self.saveats[1],
             stepsize_controller=self.stepsize_controller,
@@ -484,5 +474,5 @@ class ClebschMappingBuilder(eqx.Module):
 
         self.saveats = (
             diffrax.SaveAt(ts=self.theta_eval[512:]),
-            diffrax.SaveAt(ts=self.theta_eval[512:0:-1])
+            diffrax.SaveAt(ts=self.theta_eval[511::-1])
         )

@@ -24,6 +24,8 @@ from .clebsch import ClebschMapping
 
 
 type EmFields = tuple[Real[ArrayLike, "N"], Real[ArrayLike, "N"]]
+type GradSingleField = tuple[Real[ArrayLike, "N"], Real[ArrayLike, "N"], Real[ArrayLike, "N"]]
+type GradEmFields = tuple[GradSingleField, GradSingleField]
 
 
 class AbstractFieldProvider(eqx.Module):
@@ -40,7 +42,7 @@ class AbstractFieldProvider(eqx.Module):
     def grad(self,
         t: Real,
         psi: Real[ArrayLike, "N"], theta: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"]
-        ) -> tuple[EmFields, EmFields, EmFields]:
+        ) -> GradEmFields:
         """
         Computes the gradients of the fields with respect to (psi, theta, varphi).
         """
@@ -65,11 +67,10 @@ class ZonalFieldProvider(AbstractFieldProvider):
     def grad(self,
         t: Real,
         psi: Real[ArrayLike, "N"], theta: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"]
-        ) -> tuple[EmFields, EmFields, EmFields]:
+        ) -> GradEmFields:
         return (
-            (self.interp_phi(psi), self.interp_apar(psi)),
-            (jnp.zeros_like(psi), jnp.zeros_like(psi)),
-            (jnp.zeros_like(psi), jnp.zeros_like(psi))
+            (self.interp_phi(psi), jnp.zeros_like(psi), jnp.zeros_like(psi)),
+            (self.interp_apar(psi), jnp.zeros_like(psi), jnp.zeros_like(psi))
         )
 
 class EikonalFieldProvider(AbstractFieldProvider):
@@ -120,57 +121,67 @@ class EikonalFieldProvider(AbstractFieldProvider):
         alpha0 = jax.lax.map(lambda t: clebsch.interp_alpha(clebsch.interp_alpha.x, jnp.full_like(clebsch.interp_alpha.x, t)), theta0).transpose()
         self.interp_alpha0 = interpax.Interpolator1D(clebsch.interp_alpha.x, alpha0, kind='cubic2', extrap=True)
 
-    def __call__(self,
-        t: Real,
-        psi: Real[ArrayLike, "N"], theta: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"]
-        ) -> EmFields:
+    def _eval(self, t: Real,
+        psi: Real, theta: Real, varphi: Real
+        ) -> tuple[Real, Real]:
+        """
+        Un-vectored evaluation of the fields at a single point; used to do autodiff on the gradients
+        """
 
-        # Compute alpha; each should be shape (Nbranch, N)
+        # Compute alpha; each should be shape (Nbranch)
+        # TODO: Weights are not used currently...
         alpha, weights = self.clebsch(psi, theta)
-        # Compute alpha0; will be shape (Nmode, N)
-        alpha0 = self.interp_alpha0(psi).transpose()
+        # Compute alpha0; will be shape (Nmode)
+        alpha0 = self.interp_alpha0(psi)
 
-        # Compute the normalized radial coordinate; will be shape (Nmode, N)
-        x = (psi[None, :] - self.psi0[:, None]) / self.psi_scale[:, None]
-        # Compute the normalized binormal coordinate; will be shape (Nmode, Nbranch, N)
-        y = (alpha[None, :, :] - alpha0[:, None, :]) / self.alpha_scale[:, None, None]
+        # Compute the normalized radial coordinate; will be shape (Nmode)
+        x = (psi - self.psi0) / self.psi_scale
+        # Compute the normalized binormal coordinate; will be shape (Nmode, Nbranch)
+        y = (alpha[None, :] - alpha0[:, None]) / self.alpha_scale[:, None]
 
-        # Gaussian weight; will be shape (Nmode, Nbranch, N)
-        g = jnp.exp(-0.5 * ((x**2)[:, None, :] + y**2))
+        # Gaussian weight; will be shape (Nmode, Nbranch)
+        g = jnp.exp(-0.5 * ((x**2)[:, None] + y**2))
 
         # Shorthand for gauss-hermite coefficients
         c = self.gh_coefs
 
         # Compute the Hermite polynomials
-        h10 = x # (Nmode, N)
-        h01 = y # (Nmode, Nbranch, N)
-        h20 = (4 * x**2 - 2) # (Nmode, N)
-        h11 = (x[:, None, :] * y) # (Nmode, Nbranch, N)
-        h02 = (4 * y**2 - 2) # (Nmode, Nbranch, N)
+        h10 = x # (Nmode)
+        h01 = y # (Nmode, Nbranch)
+        h20 = (4 * x**2 - 2) # (Nmode)
+        h11 = (x[:, None] * y) # (Nmode, Nbranch)
+        h02 = (4 * y**2 - 2) # (Nmode, Nbranch)
 
-        # Compute the field amplitudes p = (phi_real, phi_imag, apar_real, apar_imag) for each mode and branch, shape (Nmode, Nbranch, 4, N)
-        p = c[:, :, 0][:, None, :, None] + \
-            c[:, :, 1][:, None, :, None] * h10[:, None, None, :] + \
-            c[:, :, 2][:, None, :, None] * h01[:, :   , None, :] + \
-            c[:, :, 3][:, None, :, None] * h20[:, None, None, :] + \
-            c[:, :, 4][:, None, :, None] * h11[:, :   , None, :] + \
-            c[:, :, 5][:, None, :, None] * h02[:, :   , None, :]
+        # Compute the field amplitudes p = (phi_real, phi_imag, apar_real, apar_imag) for each mode and branch, shape (Nmode, Nbranch, 4)
+        p = c[:, :, 0][:, None, :] + \
+            c[:, :, 1][:, None, :] * h10[:, None, None] + \
+            c[:, :, 2][:, None, :] * h01[:, :   , None] + \
+            c[:, :, 3][:, None, :] * h20[:, None, None] + \
+            c[:, :, 4][:, None, :] * h11[:, :   , None] + \
+            c[:, :, 5][:, None, :] * h02[:, :   , None]
         # Multiply by Gaussian envelope
-        p *= g[:, :, None, :]
+        p *= g[:, :, None]
 
-        # Next, compute the phases; shape (Nmode, Nbranch, N)
-        phase = self.omega[:, None, None] * t - self.n[:, None, None] * (varphi[None, None, :] - (alpha[None, :, :] - alpha0[:, None, :]))
+        # Next, compute the phases; shape (Nmode, Nbranch)
+        phase = self.omega[:, None] * t - self.n[:, None] * (varphi - (alpha[None, :] - alpha0[:, None]))
 
-        phi = jnp.sum(p[:, :, 0, :] * jnp.cos(phase) - p[:, :, 1, :] * jnp.sin(phase), axis=(0,1))
-        apar = jnp.sum(p[:, :, 2, :] * jnp.cos(phase) - p[:, :, 3, :] * jnp.sin(phase), axis=(0,1))
+        phi = jnp.sum(p[:, :, 0] * jnp.cos(phase) - p[:, :, 1] * jnp.sin(phase), axis=(0,1))
+        apar = jnp.sum(p[:, :, 2] * jnp.cos(phase) - p[:, :, 3] * jnp.sin(phase), axis=(0,1))
 
         return phi, apar
+
+    def __call__(self,
+        t: Real,
+        psi: Real[ArrayLike, "N"], theta: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"]
+        ) -> EmFields:
+
+        return jax.vmap(self._eval, in_axes=(None, 0, 0, 0))(t, psi, theta, varphi)
     
-    _grad = jax.jit(jax.jacfwd(__call__, argnums=(2,3,4)))
+    _grad = jax.vmap(jax.jacfwd(_eval, argnums=(2,3,4)), in_axes=(None, None, 0, 0, 0))
 
     def grad(self,
         t: Real,
         psi: Real[ArrayLike, "N"], theta: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"]
-        ) -> tuple[EmFields, EmFields, EmFields]:
+        ) -> GradEmFields:
 
-        return self._grad(self, t, psi, theta, varphi)
+        return self._grad(t, psi, theta, varphi)

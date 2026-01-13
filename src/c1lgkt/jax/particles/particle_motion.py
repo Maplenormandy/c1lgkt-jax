@@ -1,7 +1,7 @@
 """
 Contains codes for the vector fields associated with particle motion.
 
-Typically I work in cylindrical coordinates (R, phi, Z).
+Typically everything is done in cylindrical coordinates (R, phi, Z).
 """
 
 from typing import NamedTuple
@@ -99,7 +99,7 @@ def f_driftkinetic(t, state, args: PusherArgs):
     dfields_eval_sum = reduce(lambda a, b: jax.tree.map(lambda x, y: x + y, a, b), dfields_eval)
     # Unpack
     phi, apar = fields_eval_sum
-    (dphi_dpsi, dapar_dpsi), (dphi_dtheta, dapar_dtheta), (dphi_dvarphi, dapar_dvarphi) = dfields_eval_sum
+    (dphi_dpsi, dphi_dtheta, dphi_dvarphi), (dapar_dpsi, dapar_dtheta, dapar_dvarphi) = dfields_eval_sum
 
     ## Compute gradients of the Hamiltonian
 
@@ -120,7 +120,7 @@ def f_driftkinetic(t, state, args: PusherArgs):
     )
     
     ## Finally compute the (spatial) gradient of the Hamiltonian
-    gradh = mu * gradmodb + pp.z * gradphi - (pp.z / pp.m) * pll * gradapar
+    gradh = mu * gradmodb + pp.z * gradphi - (pp.z / pp.m) * pll[None, ...] * gradapar
 
     rdot = (jnp.cross(bu, gradh, axis=0) / pp.z + pll[None, ...] * bstar / pp.m) / bstarll[None, ...]
 
