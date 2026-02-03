@@ -52,12 +52,15 @@ and \(m,q\) are the species mass and charge respectively.
 \end{subequations}
 \begin{subequations}
 	\begin{gather}
-		H = \frac{1}{2 m_s} (m_s u_\parallel - q_s A_\parallel^{(h)})^2 + \mu B + q_s \phi \\
-		\pdv{H}{\vb{R}} = \mu \nabla B + q_s \nabla \phi - \frac{q_s}{m_s}(m_s u_\parallel - q_s A_\parallel^{(h)}) \nabla A_{\parallel}^{(h)} \\
+		H = \frac{1}{2 m_s} (m_s u_\parallel - q_s A_\parallel^{(h)})^2 + \mu B + q_s \Phi \\
+		\pdv{H}{\vb{R}} = \mu \nabla B + q_s \nabla \Phi - \frac{q_s}{m_s}(m_s u_\parallel - q_s A_\parallel^{(h)}) \nabla A_{\parallel}^{(h)} \\
 		\pdv{H}{u_\parallel} = m_s u_\parallel - q_s A_{\parallel}^{(h)} \\
 		\vb{B}^* = \vb{B} + \nabla \times ([m_s u_\parallel/ q_s + A_\parallel^{(s)}] \vu{b})
 	\end{gather}
 \end{subequations}
+
+In the current implementation, we only include the Hamiltonian portion \(A_\parallel^{(h)}\) in the particle pusher.
+Note that the generalized potential \(\Phi \approx \phi - \frac{m_s}{2 q_s} |\vb{v}_E|^2\) where \(\vb{v}_E = \frac{\vu{b} \times \nabla \phi}{B}\) is also written here for completeness, although we do not use it.
 
 \subsection{Cylindrical coordinates}
 We primarily work in a right-handed \((R,\varphi,Z)\) cylindrical coordinate system.
@@ -142,6 +145,120 @@ Near poloidal magnetic field nulls, we have
 	\theta \approx \frac{1}{2} \vb{x}^T H[\theta] \vb{x} = \frac{1}{2} \vb*{\xi}^T A \vb*{\xi}
 \end{gather*}
 
+\subsection{Eikonal Ansatz}
+
+We take an eikonal ansatz of the form
+\begin{equation}
+	\delta \phi = \exp(i(\omega t - n \alpha)) g(\alpha_\Phi, \psi)
+\end{equation}
+In the JAX version, automatic differentiation is used to compute gradients of \(\delta \phi\).
+
+\section{Monte Carlo Solution of Transport Equations}
+
+In this section, we discuss the strategy for using Monte Carlo in combination with the Feynman-Kac formula to solve certain transport equations.
+
+\subsection{Problem Setup}
+
+First, we discuss our strategy for dealing with the collision operator.
+Let's start with the nonlinear Landau collision operator, which is a Fokker-Planck operator of the form
+\begin{equation}
+	C_{ab} = \pdv{\vb{v}_a} \cdot \left[\vb{B}_{ab} f_a - \vb{D}_{ab} \cdot \pdv{f_a}{\vb{v}_a}\right]
+\end{equation}
+See \url{https://farside.ph.utexas.edu/teaching/plasma/Plasma/node38.html} for definitions of \(\vb{B}_{ab}, \vb{D}_{ab}\) (note we have absorbed the mass factor into these definitions).
+
+The gyrokinetic Vlasov equation can be written in conservative form
+\begin{equation}
+	\pdv{(B_\parallel^* f_a)}{t} + \nabla \cdot (\dot{\vb{R}} B_\parallel^* f_a) + \pdv{(\dot{u}_\parallel B_\parallel^* f_a)}{u_\parallel} = \sum_{b} B_\parallel^* C_{ab}^{gk}[f_a, f_b]
+\end{equation}
+where \(C_{ab}^{gk}\) is the gyroaveraged collision operator.
+We assume that we can write this in Fokker-Planck form.
+
+The key strategy we take is to ignore the conservation properties of the collision operator, and simply treat it as a velocity-space diffusion operator.
+Similar to how the fields are not computed self-consistently from the particles, the collisional drag and diffusion are not computed self-consistently from the particle distributions.
+Energy/momentum is not conserved in the test particle picture even in the collisionless case, as they exchange energy with the fields.
+However, if the time-dependent fields were known, then the test particle picture would be exact.
+
+Let's generalize this situation a bit.
+Suppose \(F_s(z)\) satisfies the Fokker-Planck equation
+\begin{equation*}
+	\pdv{F_s}{t} + \pdv{\vb{z}} \cdot \left[\vb{b}_s[F] F_s - \vb{D}_s[F] \cdot \pdv{F_s}{\vb{z}}\right] = 0
+\end{equation*}
+where \(\vb{z}\) is the phase space coordinate, and \(\vb{b}_s, \vb{D}_s\) are the drift and diffusion coefficients respectively, depending on \(F = F_1, ..., F_n\).
+Supposing that this nonlinear Fokker-Planck equation satisfies some (possibly nonlinear) conservation law \(\dv{t}Q[F] = 0\), we can consider
+\begin{equation*}
+	\pdv{G_s}{t} + \pdv{\vb{z}} \cdot \left[\vb{b}_s[H] G_s - \vb{D}_s[H] \cdot \pdv{G_s}{\vb{z}}\right] = 0
+\end{equation*}
+While in general we no longer expect \(\dv{t} Q[G] = 0\), the conservation law will still hold if \(H=G\).
+Thus, we can think about solving just the transport part of the equation with a fixed background \(H\), and potentially iterating to self-consistency.
+
+\subsection{Periodic Solutions to Transport Equations}
+We now focus on
+\begin{equation}
+	\pdv{G}{t} + \pdv{\vb{z}} \cdot \left[\vb{b}(\vb{z}, t) G - \vb{D}(\vb{z}, t) \cdot \pdv{G}{\vb{z}}\right] = \pdv{G}{t} - \mathcal{L}(t)[G] = S(\vb{z}, t)
+\end{equation}
+subject to the boundary conditions
+\begin{equation*}
+	G = g(\vb{z}, t) \text{ on } \partial \Omega
+\end{equation*}
+where \(\vb{b}(\vb{z}, t), \vb{D}(\vb{z}, t), S(\vb{z}, t), g(\vb{z}, t)\) are periodic in time with period \(T\).
+We want to find a periodic solution \(G(\vb{z}, t+T) = G(\vb{z}, t)\).
+
+The first trick we do is to convert the inhomogeneous boundary conditions to homogeneous ones.
+Let \(G = U + V\) where \(V\) is a periodic function which satisfies the boundary conditions, but not necessarily the PDE.
+Then, \(U\) satisfies the PDE, but with homogeneous boundary conditions and a modified (but still time-periodic) source term, which we also call \(S\).
+Thus, we focus on solving the homogeneous Dirichlet boundary condition case.
+
+Let \(\mathcal{P}_{s}^{t}\) be the evolution operator taking the solution of the homogeneous Dirichlet problem from time \(s\) to time \(t\).
+Starting with initial data \(U(0)\), we have (via Duhamel's principle)
+\begin{equation*}
+	U(t) = \mathcal{P}_{0}^{t}[U(0)] + \int_{0}^{t} \mathcal{P}_{\tau}^{t}[S(\tau)] \dd{\tau}
+\end{equation*}
+To enforce periodicity, we require \(U(0) = U(T)\), so we can write
+\begin{equation}
+	(\mathcal{I} - \mathcal{P}_{0}^{T}) U(0) = \int_{0}^{T} \mathcal{P}_{\tau}^{T}[S(\tau)] \dd{\tau}
+\end{equation}
+This equation allows us to solve for the initial data \(U(0)\) which result in a periodic solution.
+
+Note that formally, \((\mathcal{I} - A)^{-1} = \sum_{m=0}^{\infty} A^m\) for any operator \(A\) with spectral radius less than 1.
+This gives an explicit formal series representation of the solution:
+\begin{align*}
+	U(t) &= \mathcal{P}_{0}^{t} \sum_{m=0}^{\infty} (\mathcal{P}_{0}^{T})^m \left[\int_{0}^{T} \mathcal{P}_{\tau}^{T}[S(\tau)] \dd{\tau}\right] \\
+	&= \int_{0}^{T} \sum_{m=0}^{\infty} \mathcal{P}_{\tau}^{t + (m+1)T} [S(\tau)] \dd{\tau} \\
+\end{align*} 
+
+Now, for kinetic problems, we are interested in computing temporally-averaged spatially-weighted velocity moments of \(G\); these will take the form of linear functionals of \(G\) that look like
+\begin{equation*}
+	\langle \eta, G \rangle = \int_{0}^{T} \int_{\Omega} \eta(\vb{z},t) G(\vb{z},t) \dd{\vb{z}} \dd{t}
+\end{equation*}
+
+Consider the adjoint to the Fokker-Planck equation, i.e. the Kolmogorov backward equation:
+\begin{equation}
+	-\pdv{w}{t} -\vb{b}(\vb{z},t) \cdot \pdv{w}{\vb{z}} - \pdv{\vb{z}} \cdot \left[\vb{D}(\vb{z},t) \cdot \pdv{w}{\vb{z}}\right] = \eta(\vb{z},t)
+\end{equation}
+with spatial boundary conditions \(w = 0\) on \(\partial \Omega\), and periodic in time \(w(0) = w(T)\).
+Observe that
+\begin{align*}
+	\langle \eta, G \rangle
+	&= \int_{0}^{T} \int_{\Omega} \left[-\pdv{w}{t} -\vb{b} \cdot \pdv{w}{\vb{z}} - \pdv{\vb{z}} \cdot \left(\vb{D} \cdot \pdv{w}{\vb{z}}\right)\right] G \dd{\vb{z}} \dd{t} \\
+	&= \int_{0}^{T} \int_{\Omega} w \left[\pdv{G}{t} + \pdv{\vb{z}} \cdot \left(\vb{b} G - \vb{D} \cdot \pdv{G}{\vb{z}}\right)\right] \dd{\vb{z}} \dd{t} \\
+	&= \int_{0}^{T} \int_{\Omega} w S \dd{\vb{z}} \dd{t} = \langle w, S \rangle
+\end{align*}
+In other words, solving the adjoint equation allows us to compute the desired moments of \(G\) without explicitly computing \(G\) itself.
+
+\subsection{Monte Carlo Estimation}
+
+The solution to the Kolmogorov backward equation can be represented as an expectation over stochastic trajectories.
+For \(t > s\), let \(\vb{Z}_t(\vb{z},s)\) satisfy the foward-time SDE
+\begin{equation}
+	\begin{gathered}
+		\dd{\vb{Z}_t} = \tilde{\vb{b}}(\vb{Z}_t, t) \dd{t} + \sigma(\vb{Z}_t, t) \cdot \dd{\vb{W}_t} \\
+		\vb{Z}_s(\vb{z}, s) = \vb{z}
+	\end{gathered}
+\end{equation}
+Then, we have the Feynman-Kac representation (TODO: check sign)
+\begin{equation*}
+	w(\vb{z}, s) = \mathbb{E}[w(\vb{Z}_T(\vb{z},s), T)] + \mathbb{E}\left[\int_{s}^{T} \eta(\vb{Z}_t(\vb{z}, s), t) \dd{t}\right]
+\end{equation*}
 
 \section{\(C^1\) interpolation on unstructured meshes}
 

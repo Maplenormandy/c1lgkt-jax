@@ -56,7 +56,7 @@ class MagneticNullInfo(NamedTuple):
     x2: MagneticNull
 
     # Minor radius of the outboard midplane, (rmax - rmin)/2
-    a: Real
+    amid: Real
 
 def _objective_magnetic_null(y: Real[ArrayLike, "2"], args: Equilibrium) -> Real[ArrayLike, "2"]:
     """
@@ -70,8 +70,25 @@ def _objective_magnetic_null(y: Real[ArrayLike, "2"], args: Equilibrium) -> Real
 
 # %% Functions associated with computing theta via (u,v) fields
 
-type UvParams = Real[ArrayLike, "8"]
+#type UvParams = Real[ArrayLike, "8"]
 
+class UvParams(NamedTuple):
+    # Fictional o-point locations
+    o1: Real[ArrayLike, "2"]
+    o2: Real[ArrayLike, "2"]
+    # Inertia-related parameters
+    p1: Real[ArrayLike, "2"]
+    p2: Real[ArrayLike, "2"]
+
+    def from_array(arr: Real[ArrayLike, "8"]) -> "UvParams":
+        return UvParams(
+            o1=arr[0:2],
+            o2=arr[2:4],
+            p1=arr[4:6],
+            p2=arr[6:8],
+        )
+
+@jax.jit
 def _compute_uv(r: Real, z: Real, nulls: MagneticNullInfo, params: UvParams) -> tuple[Real, Real]:
     """
     Computes the auxiliary (u,v) fields used to compute theta = arctan2(v,u). The strategy is to place zeros of a
@@ -80,29 +97,37 @@ def _compute_uv(r: Real, z: Real, nulls: MagneticNullInfo, params: UvParams) -> 
     z0 corresponds to the magnetic axis, while z1 and z2 correspond to the fictional o-points.
     This is the internal, unbatched function with parameters that specify the locations of the fictional o-points.
     """
+    # Pack coordinate array
+    rz = jnp.array([r, z])
+
     # Local coordinates near the axis
-    eta0 = jnp.tensordot(nulls.axis.s.T, jnp.array([r - nulls.axis.rz[0], z - nulls.axis.rz[1]]), axes=1)
+    eta0 = (rz - nulls.axis.rz) @ nulls.axis.s
 
     # Local coordinates for fictional o-points. Note unit normalization does not matter.
-    eta1 = jnp.array([r - params[0], z - params[1]])
-    eta2 = jnp.array([r - params[2], z - params[3]])
+    eta1 = rz - params.o1
+    eta2 = rz - params.o2
 
     # Local coordinates near x-point
-    xi1 = jnp.tensordot(nulls.x1.s.T, jnp.array([r - nulls.x1.rz[0], z - nulls.x1.rz[1]]), axes=1)
-    xi2 = jnp.tensordot(nulls.x2.s.T, jnp.array([r - nulls.x2.rz[0], z - nulls.x2.rz[1]]), axes=1)
+    xi1 = (rz - nulls.x1.rz) @ nulls.x1.s
+    xi2 = (rz - nulls.x2.rz) @ nulls.x2.s
 
-    a_norm = nulls.a * jnp.sqrt(jnp.abs(nulls.axis.lam[0]))
+    a_norm = nulls.amid * jnp.sqrt(jnp.abs(nulls.axis.lam[0]))
 
     # Complex coordinates for the u, v field
     z0 = jnp.tanh(eta0[0]/a_norm) + 1j*(eta0[1]/a_norm)
-    z1 = eta1[0] + 1j*eta1[1] + (params[4] + 1j*params[5]) * jnp.exp(-0.5 * (xi1[0]**2 + xi1[1]**2))
-    z2 = eta2[0] + 1j*eta2[1] + (params[6] + 1j*params[7]) * jnp.exp(-0.5 * (xi2[0]**2 + xi2[1]**2))
+    z1 = eta1[0] + 1j*eta1[1]
+    z2 = eta2[0] + 1j*eta2[1]
+
+    xi1_sq = xi1**2
+    xi2_sq = xi2**2
 
     uv = z0 * z1 * z2
+    uv = uv * (1 + 1j * (jnp.dot(params.p1, xi1_sq - 1.0) * jnp.exp(-0.5 * jnp.sum(xi1_sq) / (nulls.x1.psi)**2) + jnp.dot(params.p2, xi2_sq - 1.0) * jnp.exp(-0.5 * jnp.sum(xi2_sq) / (nulls.x2.psi)**2)))
 
     return jnp.real(uv), jnp.imag(uv)
 
 
+@jax.jit
 def _grad_theta(r: Real, z: Real, nulls: MagneticNullInfo, params: UvParams) -> tuple[Real, Real]:
     """
     Computes the smoothly-varying gradient of theta = arctan2(v,u) (i.e. across the branch cut) with respect to (r,z)
@@ -121,6 +146,7 @@ _hess_theta = jax.jacfwd(_grad_theta, argnums=(0, 1))
 
 ## These functions help compute the parameters needed for the (u,v) field
 
+@jax.jit
 def _objective_uv_params(y: Real[ArrayLike, "4"], args: MagneticNullInfo) -> Real[ArrayLike, "4"]:
     """
     Objective function which ensures that grad(theta) = 0 at the x-points. This is the coarse version without inertia constraints.
@@ -129,27 +155,33 @@ def _objective_uv_params(y: Real[ArrayLike, "4"], args: MagneticNullInfo) -> Rea
 
     # Augment y to full 8 parameters with zeros for inertia-related params
     y_aug = jnp.array([y[0], y[1], y[2], y[3], 0.0, 0.0, 0.0, 0.0])
+    # convert to params
+    uv_params = UvParams.from_array(y_aug)
 
     # Compute grad(theta) at the x-points
-    dth1 = jnp.array(_grad_theta(nulls.x1.rz[0], nulls.x1.rz[1], nulls, y_aug))
-    dth2 = jnp.array(_grad_theta(nulls.x2.rz[0], nulls.x2.rz[1], nulls, y_aug))
+    dth1 = jnp.array(_grad_theta(nulls.x1.rz[0], nulls.x1.rz[1], nulls, uv_params))
+    dth2 = jnp.array(_grad_theta(nulls.x2.rz[0], nulls.x2.rz[1], nulls, uv_params))
 
     # Return grad(theta) components at both x-points
     return jnp.array([dth1[0], dth1[1], dth2[0], dth2[1]])
 
+@jax.jit
 def _objective_uv_params_refine(y: Real[ArrayLike, "8"], args: MagneticNullInfo) -> Real[ArrayLike, "8"]:
     """
     Objective function which ensures that grad(theta) = 0 at the x-points, as well as enforcing inertia constraints.
     """
     nulls = args
 
+    # Convert to params
+    uv_params = UvParams.from_array(y)
+
     # Compute grad(theta) at the x-points
-    dth1 = jnp.array(_grad_theta(nulls.x1.rz[0], nulls.x1.rz[1], nulls, y))
-    dth2 = jnp.array(_grad_theta(nulls.x2.rz[0], nulls.x2.rz[1], nulls, y))
+    dth1 = jnp.array(_grad_theta(nulls.x1.rz[0], nulls.x1.rz[1], nulls, uv_params))
+    dth2 = jnp.array(_grad_theta(nulls.x2.rz[0], nulls.x2.rz[1], nulls, uv_params))
 
     # Compute Hessian of theta at the x-points
-    hth1 = jnp.array(_hess_theta(nulls.x1.rz[0], nulls.x1.rz[1], nulls, y))
-    hth2 = jnp.array(_hess_theta(nulls.x2.rz[0], nulls.x2.rz[1], nulls, y))
+    hth1 = jnp.array(_hess_theta(nulls.x1.rz[0], nulls.x1.rz[1], nulls, uv_params))
+    hth2 = jnp.array(_hess_theta(nulls.x2.rz[0], nulls.x2.rz[1], nulls, uv_params))
 
     # Compute the inertia at the x-points, which we want to take the form [[0, a], [a, 0]]
     inertia1 = nulls.x1.sinv @ hth1 @ nulls.x1.sinv.T
@@ -333,6 +365,20 @@ class ClebschMappingBuilder(eqx.Module):
             lam=w, q=v, s=q, sinv=qinv
         )
     
+    def _init_empty_magnetic_null(self) -> MagneticNull:
+        """
+        Returns an empty MagneticNull object with all zeros.
+        """
+        return MagneticNull(
+            rz=jnp.zeros((2,)),
+            psi=0.0,
+            hess=jnp.zeros((2,2)),
+            lam=jnp.zeros((2,)),
+            q=jnp.zeros((2,2)),
+            s=jnp.zeros((2,2)),
+            sinv=jnp.zeros((2,2))
+        )
+    
     def _find_uv_params(self, nulls: MagneticNullInfo) -> UvParams:
         """
         Computes the parameters for the (u,v) field such that grad(theta) = 0 at the x-points, with inertia constraints.
@@ -344,7 +390,7 @@ class ClebschMappingBuilder(eqx.Module):
         y0_refine = jnp.array([sol.value[0], sol.value[1], sol.value[2], sol.value[3], 0.0, 0.0, 0.0, 0.0])
         sol_refine = optx.root_find(_objective_uv_params_refine, self.newton_uv_params_refine, y0_refine, args=nulls, throw=False)
         
-        return sol_refine.value
+        return UvParams.from_array(sol_refine.value)
     
     @partial(jax.vmap, in_axes=(None, 0, None))
     def _compute_alpha(self, r0, args: ClebschFieldlineArgs):
@@ -364,19 +410,15 @@ class ClebschMappingBuilder(eqx.Module):
         # Initial state (r, z, alpha=0)
         y0 = (r0, z0, jnp.zeros_like(r0))
 
-        # First, we want to integrate to theta = 0. Note that time is parameterized by theta
-        sol_theta0 = diffrax.diffeqsolve(
-            self.term, self.solver,
-            t0=theta0, t1=0.0, dt0=5e-3, y0=y0,
-            args=args,
-            stepsize_controller=self.stepsize_controller,
-            event=self.event,
-            max_steps=16,
-            throw=False
-        )
-
-        # Now, we get a new initial state at theta = 0
-        y0 = y0 = (sol_theta0.ys[0][0], sol_theta0.ys[1][0], sol_theta0.ys[2][0])
+        # First, we want to integrate to theta = 0. Note that time is parameterized by theta. We manually perform an RK4 step
+        k1 = fn_fieldline(theta0, y0, args)
+        y1 = jax.tree.map(lambda a, b: a - 0.5 * b * (theta0/2), y0, k1)
+        k2 = fn_fieldline(theta0/2, y1, args)
+        y2 = jax.tree.map(lambda a, b: a - 0.5 * b * (theta0/2), y0, k2)
+        k3 = fn_fieldline(theta0/2, y2, args)
+        y3 = jax.tree.map(lambda a, b: a - b * (theta0), y0, k3)
+        k4 = fn_fieldline(0.0, y3, args)
+        y0 = jax.tree.map(lambda a, b, c, d, e: a - (b + 2*c + 2*d + e) * (theta0/6), y0, k1, k2, k3, k4)
 
         # Next, we want to integrate to \pm 4 pi in theta to get a full field line
         sol_fwd = diffrax.diffeqsolve(
@@ -415,19 +457,22 @@ class ClebschMappingBuilder(eqx.Module):
 
         # Join together the solution and return it
         return jnp.concatenate([alpha_bak[::-1], alpha_fwd[:]], axis=0)
-
-    def clebsch_from_equilibrium(self, eq: Equilibrium) -> tuple[ThetaMapping, ClebschMapping]:
+    
+    def build_theta_map(self, eq: Equilibrium) -> ThetaMapping:
+        """
+        Computes the theta mapping from the given equilibrium
+        """
         ## First, compute the locations of the main magnetic nulls.
         axis = self._find_magnetic_null(jnp.array([eq.raxis, eq.zaxis]), eq)
         x1 = self._find_magnetic_null(jnp.array([eq.rx, eq.zx]), eq)
-        # TODO: Figure out a better way to guess the location of this second null
-        x2 = self._find_magnetic_null(jnp.array([1.2321, 1.1871]), eq)
+        # Guess the location of the second null by flipping the primary null across the magnetic axis midplane
+        x2 = self._find_magnetic_null(jnp.array([eq.rx, 2*eq.zaxis - eq.zx]), eq)
 
         ## Compute minor radius
         a = 0.5 * (jnp.max(eq.lcfsrz[0,:]) - jnp.min(eq.lcfsrz[0,:]))
 
         ## Assemble null info
-        nulls = MagneticNullInfo(axis=axis, x1=x1, x2=x2, a=a)
+        nulls = MagneticNullInfo(axis=axis, x1=x1, x2=x2, amid=a)
 
         ## Next, compute the parameters for the (u,v) field such that grad(theta) = 0 at the x-points
         uv_params = self._find_uv_params(nulls)
@@ -437,6 +482,36 @@ class ClebschMappingBuilder(eqx.Module):
             nulls=nulls,
             uv_params=uv_params,
         )
+
+        return theta_map
+    
+    def load_theta_map(self, eqx_filename: str) -> ThetaMapping:
+        """
+        Loads a theta mapping from a given eqx file
+        """
+        # Open up the file
+        with open(eqx_filename, 'rb') as f:
+            # Create an empty theta map to use as a template
+            nulls_empty = MagneticNullInfo(
+                axis=self._init_empty_magnetic_null(),
+                x1=self._init_empty_magnetic_null(),
+                x2=self._init_empty_magnetic_null(),
+                amid=0.0)
+            theta_map_empty = ThetaMapping(
+                nulls=nulls_empty,
+                uv_params=UvParams.from_array(jnp.zeros((8,))),
+            )
+            # Deserialize the theta map
+            theta_map = eqx.tree_deserialise_leaves(f, theta_map_empty)
+
+        return theta_map
+
+    def build_clebsch(self, theta_map: ThetaMapping, eq: Equilibrium) -> ClebschMapping:
+        """
+        Computes the Clebsch mapping from the given equilibrium
+        """
+        nulls = theta_map.nulls
+        uv_params = theta_map.uv_params
 
         ## Finally, we want to compute alpha on a grid of psi and theta values for interpolation later
         r0 = jnp.sqrt(jnp.linspace(0.01, 0.99, 512)) * (eq.rmax - nulls.axis.rz[0]) + (nulls.axis.rz[0])
@@ -451,7 +526,26 @@ class ClebschMappingBuilder(eqx.Module):
             interp_alpha=interp_alpha
         )
 
-        return theta_map, clebsch
+        return clebsch
+    
+    def load_clebsch(self, eqx_filename: str) -> ClebschMapping:
+        """
+        Loads a Clebsch mapping from a given eqx file
+        """
+        # Open up the file
+        with open(eqx_filename, 'rb') as f:
+            # Create an empty clebsch mapping to use as a template
+            psi_eval = jnp.linspace(0.0, 1.0, 512)  # Placeholder; actual values will be loaded
+            theta_eval = jnp.linspace(-4*jnp.pi, 4*jnp.pi, 1024, endpoint=False)
+            alpha_eval = jnp.zeros((512, 1024))  # Placeholder; actual values will be loaded
+            interp_alpha_empty = interpax.Interpolator2D(psi_eval, theta_eval, alpha_eval, method='monotonic', extrap=True)
+            clebsch_empty = ClebschMapping(
+                interp_alpha=interp_alpha_empty
+            )
+            # Deserialize the clebsch mapping
+            clebsch = eqx.tree_deserialise_leaves(f, clebsch_empty)
+
+        return clebsch
 
     def __init__(self):
         """

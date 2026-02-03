@@ -121,6 +121,7 @@ class EikonalFieldProvider(AbstractFieldProvider):
         alpha0 = jax.lax.map(lambda t: clebsch.interp_alpha(clebsch.interp_alpha.x, jnp.full_like(clebsch.interp_alpha.x, t)), theta0).transpose()
         self.interp_alpha0 = interpax.Interpolator1D(clebsch.interp_alpha.x, alpha0, kind='cubic2', extrap=True)
 
+    @jax.jit
     def _eval(self, t: Real,
         psi: Real, theta: Real, varphi: Real
         ) -> tuple[Real, Real]:
@@ -170,6 +171,7 @@ class EikonalFieldProvider(AbstractFieldProvider):
 
         return phi, apar
 
+    @jax.jit
     def __call__(self,
         t: Real,
         psi: Real[ArrayLike, "N"], theta: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"]
@@ -179,6 +181,7 @@ class EikonalFieldProvider(AbstractFieldProvider):
     
     _grad = jax.vmap(jax.jacfwd(_eval, argnums=(2,3,4)), in_axes=(None, None, 0, 0, 0))
 
+    @jax.jit
     def grad(self,
         t: Real,
         psi: Real[ArrayLike, "N"], theta: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"]

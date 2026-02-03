@@ -62,6 +62,7 @@ class PusherArgs(NamedTuple):
 
 # %% Functions for gyrokinetic particle pushing with zonally symmetric equilibria
 
+@jax.jit
 def f_driftkinetic(t, state, args: PusherArgs):
     """
     Push a (single) drift-kinetic tracer in (R, varphi, Z) coordinates.

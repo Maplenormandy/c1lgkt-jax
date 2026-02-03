@@ -5,6 +5,7 @@
 Class for magnetic and profile equilibria.
 """
 
+import jax
 import jax.numpy as jnp
 import equinox as eqx
 import interpax
@@ -118,6 +119,7 @@ class Equilibrium(eqx.Module):
         self.interp_ff = interpax.Interpolator1D(self.psi, self.ff, method='cubic2', extrapolate=(self.ff[0], self.ff[-1]))
         self.interp_psi = interpax.Interpolator2D(self.rgrid, self.zgrid, self.psirz.T, method='cubic2')
 
+    @jax.jit
     def compute_bv(self, r, z):
         """
         Compute the magnetic field vector;
@@ -136,6 +138,7 @@ class Equilibrium(eqx.Module):
 
         return jnp.array([-dzpsi / r, -ff / r, drpsi / r])
     
+    @jax.jit
     def compute_psi_and_ff(self, r, z):
         """
         Shorthand function for computing psi, ff, and its derivatives
@@ -159,6 +162,7 @@ class Equilibrium(eqx.Module):
 
         return psi_ev, ff_ev
     
+    @jax.jit
     def compute_geom_terms(self, r, psi_ev, ff_ev):
         """
         Computes unit vector b, |B|, grad|B|, and curl(b) given psi and ff evaluations
