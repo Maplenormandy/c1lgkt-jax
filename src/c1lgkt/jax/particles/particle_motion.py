@@ -56,8 +56,9 @@ class PusherArgs(NamedTuple):
     """
     eq: Equilibrium | None = None
     pp: ParticleParams | None = None
-    theta_map: ThetaMapping | None = None
-    fields: list[AbstractFieldProvider] = []
+    #theta_map: ThetaMapping | None = None
+    fields: list[AbstractFieldProvider] | None = None
+
 
 
 # %% Functions for gyrokinetic particle pushing with zonally symmetric equilibria
@@ -74,7 +75,7 @@ def f_driftkinetic(t, state, args: PusherArgs):
     # Unpack the arguments
     eq = args.eq
     pp = args.pp
-    theta_map = args.theta_map
+    #theta_map = args.theta_map
     fields = args.fields
     
     ## Magnetic terms
@@ -86,21 +87,13 @@ def f_driftkinetic(t, state, args: PusherArgs):
 
     ## Compute the fields
 
-    # Compute theta and its gradients
-    theta = theta_map(r,z)
-    thetadr, thetadz = theta_map.grad(r, z)
-    # Unpack psi and its gradients
-    (psi, psidr, psidz, psidrr, psidrz, psidzz) = psi_ev
-
     # Evaluate the fields and their gradients over the list of field providers
-    fields_eval = [f(t, psi, theta, varphi) for f in fields]
-    dfields_eval = [f.grad(t, psi, theta, varphi) for f in fields]
+    fields_eval = [f.value_and_grad(t, r, varphi, z, psi_ev) for f in fields]
     # Sum up the values and gradients
     fields_eval_sum = reduce(lambda a, b: jax.tree.map(lambda x, y: x + y, a, b), fields_eval)
-    dfields_eval_sum = reduce(lambda a, b: jax.tree.map(lambda x, y: x + y, a, b), dfields_eval)
     # Unpack
-    phi, apar = fields_eval_sum
-    (dphi_dpsi, dphi_dtheta, dphi_dvarphi), (dapar_dpsi, dapar_dtheta, dapar_dvarphi) = dfields_eval_sum
+    phi, apar = fields_eval_sum[0]
+    (dphi_dr, dphi_dvarphi, dphi_dz), (dapar_dr, dapar_dvarphi, dapar_dz) = fields_eval_sum[1]
 
     ## Compute gradients of the Hamiltonian
 
@@ -108,17 +101,9 @@ def f_driftkinetic(t, state, args: PusherArgs):
     ppar = pp.m * upar - pp.z * apar
 
     # Electric potential gradient
-    gradphi = jnp.array(
-        [psidr * dphi_dpsi + thetadr * dphi_dtheta,
-         dphi_dvarphi / r,
-         psidz * dphi_dpsi + thetadz * dphi_dtheta]
-    )
+    gradphi = jnp.array([dphi_dr, dphi_dvarphi / r, dphi_dz])
     # Magnetic potential gradient
-    gradapar = jnp.array(
-        [psidr * dapar_dpsi + thetadr * dapar_dtheta,
-         dapar_dvarphi / r,
-         psidz * dapar_dpsi + thetadz * dapar_dtheta]
-    )
+    gradapar = jnp.array([dapar_dr, dapar_dvarphi / r, dapar_dz])
     
     ## Finally compute the (spatial) gradient of the Hamiltonian
     gradh = mu * gradmodb + pp.z * gradphi - (pp.z / pp.m) * ppar[None, ...] * gradapar

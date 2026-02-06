@@ -18,7 +18,7 @@ from jaxtyping import ArrayLike, Real, Complex, Integer
 
 import abc
 
-from .clebsch import ClebschMapping
+from .clebsch import ClebschMapping, ThetaMapping
 
 # %% Allowable field signatures
 
@@ -32,21 +32,27 @@ class AbstractFieldProvider(eqx.Module):
     @abc.abstractmethod
     def __call__(self,
         t: Real,
-        psi: Real[ArrayLike, "N"], theta: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"]
+        r: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"],
+        psi_ev: tuple
         ) -> EmFields:
         """
-        Compute field components (phi, A_parallel) at given (t, psi, theta, varphi).
+        Compute field components (phi, A_parallel) at given (t, R, varphi, Z). Also takes in psi as auxiliary information, as many field providers will want to use it as the radial coordinate.
         """
         raise NotImplementedError
     
-    def grad(self,
+    @abc.abstractmethod
+    def value_and_grad(self,
         t: Real,
-        psi: Real[ArrayLike, "N"], theta: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"]
-        ) -> GradEmFields:
+        r: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"],
+        psi_ev: tuple
+        ) -> tuple[EmFields, GradEmFields]:
         """
-        Computes the gradients of the fields with respect to (psi, theta, varphi).
+        Computes the values and gradients of the fields with respect to (R, varphi, Z).
         """
         raise NotImplementedError
+
+
+# %% Some field providers
 
 class ZonalFieldProvider(AbstractFieldProvider):
     """
@@ -60,17 +66,94 @@ class ZonalFieldProvider(AbstractFieldProvider):
 
     def __call__(self,
         t: Real,
-        psi: Real[ArrayLike, "N"], theta: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"]
+        r: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"],
+        psi_ev: tuple
         ) -> EmFields:
+        # Unpack psi and its gradients
+        (psi, psidr, psidz, psidrr, psidrz, psidzz) = psi_ev
         return self.interp_phi(psi), self.interp_apar(psi)
     
-    def grad(self,
+    def value_and_grad(self,
         t: Real,
-        psi: Real[ArrayLike, "N"], theta: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"]
-        ) -> GradEmFields:
+        r: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"],
+        psi_ev: tuple
+        ) -> tuple[EmFields, GradEmFields]:
+        # Unpack psi and its gradients
+        (psi, psidr, psidz, psidrr, psidrz, psidzz) = psi_ev
+
+        dphi = self.interp_phi(psi, dx=1)
+        dapar = self.interp_apar(psi, dx=1)
+
         return (
-            (self.interp_phi(psi), jnp.zeros_like(psi), jnp.zeros_like(psi)),
-            (self.interp_apar(psi), jnp.zeros_like(psi), jnp.zeros_like(psi))
+            (self.interp_phi(psi), self.interp_apar(psi)),
+            (
+                (dphi * psidr, jnp.zeros_like(psi), dphi * psidz),
+                (dapar * psidr, jnp.zeros_like(psi), dapar * psidz)
+            )
+        )
+    
+class RZFourierFieldProvider(AbstractFieldProvider):
+    """
+    Field provider for fields which are real in (R,Z) and (sparse) Fourier in varphi. Phase = omega t - n varphi
+    """
+
+    # List of Fourier modes
+    n: Integer[ArrayLike, "Nmode"]
+    omega: Real[ArrayLike, "Nmode"]
+
+    # Complex Fourier coefficients for phi and A_parallel, as functions of (R,Z)
+    interp_phi_coefs: interpax.Interpolator2D
+    interp_apar_coefs: interpax.Interpolator2D
+
+    def sum_fourier(coefs: Complex[ArrayLike, "Nq Nmode"], phases: Real[ArrayLike, "Nq Nmode"]) -> Real[ArrayLike, "Nq"]:
+        return jnp.sum(jnp.real(coefs) * jnp.cos(phases) - jnp.imag(coefs) * jnp.sin(phases), axis=-1)
+
+    def __call__(self,
+        t: Real,
+        r: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"],
+        psi_ev: tuple
+        ) -> EmFields:
+        # Evaluate the Fourier coefficients at the given (R,Z)
+        phi_coefs = self.interp_phi_coefs(r, z)
+        apar_coefs = self.interp_apar_coefs(r, z)
+        phases = (self.omega * t)[None,:] - self.n[None, :] * varphi[:, None]
+
+        # Now we can compute the fields by summing over modes
+        phi = RZFourierFieldProvider.sum_fourier(phi_coefs, phases)
+        apar = RZFourierFieldProvider.sum_fourier(apar_coefs, phases)
+
+        return phi, apar
+    
+    def value_and_grad(self,
+        t: Real,
+        r: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"],
+        psi_ev: tuple
+        ) -> tuple[EmFields, GradEmFields]:
+        # Evaluate the Fourier coefficients at the given (R,Z) and their gradients
+        phi_coefs = self.interp_phi_coefs(r, z)
+        apar_coefs = self.interp_apar_coefs(r, z)
+        dphi_coefs_dr = self.interp_phi_coefs(r, z, dx=1, dy=0)
+        dphi_coefs_dz = self.interp_phi_coefs(r, z, dx=0, dy=1)
+        dapar_coefs_dr = self.interp_apar_coefs(r, z, dx=1, dy=0)
+        dapar_coefs_dz = self.interp_apar_coefs(r, z, dx=0, dy=1)
+        phases = (self.omega * t)[None,:] - self.n[None, :] * varphi[:, None]
+
+        # Now we can compute the fields and their gradients by summing over modes
+        phi = RZFourierFieldProvider.sum_fourier(phi_coefs, phases)
+        dphi_dr = RZFourierFieldProvider.sum_fourier(dphi_coefs_dr, phases)
+        dphi_dz = RZFourierFieldProvider.sum_fourier(dphi_coefs_dz, phases)
+        dphi_dvarphi = RZFourierFieldProvider.sum_fourier(-1j * self.n[None, :] * phi_coefs, phases)
+        apar = RZFourierFieldProvider.sum_fourier(apar_coefs, phases)
+        dapar_dr = RZFourierFieldProvider.sum_fourier(dapar_coefs_dr, phases)
+        dapar_dz = RZFourierFieldProvider.sum_fourier(dapar_coefs_dz, phases)
+        dapar_dvarphi = RZFourierFieldProvider.sum_fourier(-1j * self.n[None, :] * apar_coefs, phases)
+
+        return (
+            (phi, apar),
+            (
+                (dphi_dr, dphi_dvarphi, dphi_dz),
+                (dapar_dr, dapar_dvarphi, dapar_dz)
+            )
         )
 
 class EikonalFieldProvider(AbstractFieldProvider):
@@ -81,6 +164,7 @@ class EikonalFieldProvider(AbstractFieldProvider):
     """
 
     # Interpolator for the clebsch function alpha_RZ(psi, theta), so B = \nabla psi x \nabla (alpha_RZ - \varphi)
+    theta_map: ThetaMapping
     clebsch: ClebschMapping
 
     # List of eikonal modes; we should be thinking of this like a sum over saddle points in the stationary phase approximation
@@ -96,6 +180,7 @@ class EikonalFieldProvider(AbstractFieldProvider):
     gh_coefs: Real[ArrayLike, "Nmode 4 6"] # Nmode, real/imag parts of phi/apar, then 6 GH coefficients
 
     def __init__(self,
+        theta_map: ThetaMapping,
         clebsch: ClebschMapping,
         n: Integer[ArrayLike, "Nmode"],
         omega: Real[ArrayLike, "Nmode"],
@@ -108,6 +193,7 @@ class EikonalFieldProvider(AbstractFieldProvider):
         """
         Initializes an eikonal field provider. The only nontrivial part is constructing the interpolator for alpha0(psi), which is done here.
         """
+        self.theta_map = theta_map
         self.clebsch = clebsch
         self.n = n
         self.omega = omega
@@ -171,20 +257,47 @@ class EikonalFieldProvider(AbstractFieldProvider):
 
         return phi, apar
 
+    _grad_eval = jax.vmap(jax.jacrev(_eval, argnums=(2,3,4)), in_axes=(None, None, 0, 0, 0))
+
     @jax.jit
     def __call__(self,
         t: Real,
-        psi: Real[ArrayLike, "N"], theta: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"]
+        r: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"],
+        psi_ev: tuple
         ) -> EmFields:
+        # Unpack psi and its gradients
+        (psi, psidr, psidz, psidrr, psidrz, psidzz) = psi_ev
+
+        # Compute theta
+        theta = self.theta_map(r,z)
 
         return jax.vmap(self._eval, in_axes=(None, 0, 0, 0))(t, psi, theta, varphi)
-    
-    _grad = jax.vmap(jax.jacfwd(_eval, argnums=(2,3,4)), in_axes=(None, None, 0, 0, 0))
 
     @jax.jit
-    def grad(self,
+    def value_and_grad(self,
         t: Real,
-        psi: Real[ArrayLike, "N"], theta: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"]
-        ) -> GradEmFields:
+        r: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"],
+        psi_ev: tuple
+        ) -> tuple[EmFields, GradEmFields]:
 
-        return self._grad(t, psi, theta, varphi)
+        # Unpack psi and its gradients
+        (psi, psidr, psidz, psidrr, psidrz, psidzz) = psi_ev
+
+        # Compute theta and its gradients
+        theta = self.theta_map(r,z)
+        thetadr, thetadz = self.theta_map.grad(r,z)
+
+        # Get fields
+        phi, apar = jax.vmap(self._eval, in_axes=(None, 0, 0, 0))(t, psi, theta, varphi)
+
+        # Compute the jacobian of the fields
+        (dphi_dpsi, dphi_dtheta, dphi_dvarphi), (dapar_dpsi, dapar_dtheta, dapar_dvarphi) = self._grad_eval(t, psi, theta, varphi)
+
+        # Return the gradients
+        return (
+            (phi, apar),
+            (
+                (dphi_dpsi * psidr + dphi_dtheta * thetadr, dphi_dvarphi, dphi_dpsi * psidz + dphi_dtheta * thetadz),
+                (dapar_dpsi * psidr + dapar_dtheta * thetadr, dapar_dvarphi, dapar_dpsi * psidz + dapar_dtheta * thetadz)
+            )
+        )
