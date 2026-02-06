@@ -69,7 +69,7 @@ def f_driftkinetic(t, state, args: PusherArgs):
     Note y = (R, varphi, Z, u_||, mu). (TODO: Is this the best set of coordinates for EM?)
     """
     # Unpack the state
-    r, varphi, z, ull, mu = state
+    r, varphi, z, upar, mu = state
 
     # Unpack the arguments
     eq = args.eq
@@ -81,8 +81,8 @@ def f_driftkinetic(t, state, args: PusherArgs):
     psi_ev, ff_ev = eq.compute_psi_and_ff(r, z)
     bv, bu, modb, gradmodb, curlbu = eq.compute_geom_terms(r, psi_ev, ff_ev)
     # Bstar and Bstar parallel
-    bstar = bv + (pp.m / pp.z) * curlbu * ull[None, ...]
-    bstarll = jnp.sum(bu*bstar, axis=0)
+    bstar = bv + (pp.m / pp.z) * curlbu * upar[None, ...]
+    bstarpar = jnp.sum(bu*bstar, axis=0)
 
     ## Compute the fields
 
@@ -104,8 +104,8 @@ def f_driftkinetic(t, state, args: PusherArgs):
 
     ## Compute gradients of the Hamiltonian
 
-    # pll = dH/du_||
-    pll = pp.m * ull - pp.z * apar
+    # p_|| = dH/du_||
+    ppar = pp.m * upar - pp.z * apar
 
     # Electric potential gradient
     gradphi = jnp.array(
@@ -121,17 +121,17 @@ def f_driftkinetic(t, state, args: PusherArgs):
     )
     
     ## Finally compute the (spatial) gradient of the Hamiltonian
-    gradh = mu * gradmodb + pp.z * gradphi - (pp.z / pp.m) * pll[None, ...] * gradapar
+    gradh = mu * gradmodb + pp.z * gradphi - (pp.z / pp.m) * ppar[None, ...] * gradapar
 
-    rdot = (jnp.cross(bu, gradh, axis=0) / pp.z + pll[None, ...] * bstar / pp.m) / bstarll[None, ...]
+    rdot = (jnp.cross(bu, gradh, axis=0) / pp.z + ppar[None, ...] * bstar / pp.m) / bstarpar[None, ...]
 
     drdt = rdot[0, ...]
     dvarphidt = rdot[1, ...] / r
     dzdt = rdot[2, ...]
-    dulldt = -(jnp.sum(bstar*gradh, axis=0) / bstarll) / pp.m
+    dupardt = -(jnp.sum(bstar*gradh, axis=0) / bstarpar) / pp.m
     dmudt = jnp.zeros_like(mu)
 
-    return (drdt, dvarphidt, dzdt, dulldt, dmudt)
+    return (drdt, dvarphidt, dzdt, dupardt, dmudt)
 
 
 # def f_driftkinetic_midplane(t, state, args: PusherArgs):

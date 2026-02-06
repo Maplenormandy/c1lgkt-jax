@@ -83,7 +83,7 @@ saveat = diffrax.SaveAt(t0=True, t1=True, steps=True)
 args = particle_motion.PusherArgs(eq=eq, pp=pp, theta_map=theta_map, fields=[field_provider])
 stepsize_controller = diffrax.PIDController(rtol=1e-8, atol=1e-8)
 
-num_particles = 16
+num_particles = 4096
 # Set up initial conditions
 y0 = (
     jnp.linspace(jnp.max(eq.lcfsrz[0,:])-0.08, jnp.max(eq.lcfsrz[0,:])-0.005, num_particles),
@@ -112,12 +112,19 @@ npuncs = [particle_tools.PunctureData(
 
 # JIT compile the solver
 # Integrate particle trajectories
-sol = diffrax.diffeqsolve(
-    term, solver, t0=t0, t1=1000.0, dt0=2e-6, y0=y0,
-    args=args, stepsize_controller=diffrax.ConstantStepSize(), saveat=saveat,
-    max_steps=256,
-    throw=False
-)
+@jax.jit
+def compute_sol(y0):
+    # Integrate particle trajectories
+    sol = diffrax.diffeqsolve(
+        term, solver, t0=t0, t1=1000.0, dt0=2e-6, y0=y0,
+        args=args, stepsize_controller=diffrax.ConstantStepSize(), saveat=saveat,
+        max_steps=256,
+        throw=False
+    )
+    return sol
+
+sol = compute_sol(y0)
+
 
 # Extract solution and compute punctures
 r_sol, varphi_sol, z_sol, vpar_sol, mu_sol = sol.ys

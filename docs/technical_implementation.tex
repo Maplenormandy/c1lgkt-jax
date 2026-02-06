@@ -260,6 +260,17 @@ Then, we have the Feynman-Kac representation (TODO: check sign)
 	w(\vb{z}, s) = \mathbb{E}[w(\vb{Z}_T(\vb{z},s), T)] + \mathbb{E}\left[\int_{s}^{T} \eta(\vb{Z}_t(\vb{z}, s), t) \dd{t}\right]
 \end{equation*}
 
+\subsection{Computing Transport via Periodic Orbits}
+
+Consider an observable that looks like \(\int_\Omega F(\vb{z}, t) \eta(\vb{z}) \dd{z}\)
+
+Average over a finite time interval \([t_0, t_1]\) of IVP -> approximated by the `long-time' average <-> approximated by average over a low-diml chaotic attractor -> approximated by weighted average over smaller set of periodic orbits of the nonlinear GK-VP -> approximate nonlinear UPOs of GK-VP via periodic solutions to the passive transport problem (9), where \(\vb{b}(\vb{z},t)\) and \(\vb{D}(\vb{z},t)\) are computed from equilibrium + eigenmode perturbation.
+
+\begin{equation*}
+	\ev{A} = \sum_{\text{periodic orbits } p} w_p \ev{A}_p \approx \sum_{\text{some smaller set of periodic orbits } p} \tilde{w}_p \ev{A}_p
+\end{equation*}
+
+
 \section{\(C^1\) interpolation on unstructured meshes}
 
 \subsection{Field line tracing}
@@ -467,6 +478,15 @@ We have the following coordinate transforms
 	\begin{bmatrix}
 		\dd{R} \\ \dd{\varphi} \\ \dd{Z}
 	\end{bmatrix}
+\end{equation*}
+
+\section{Miscellania}
+
+\subsection{Derivative Operators}
+
+Let's look at the parallel Laplacian
+\begin{equation*}
+	\nabla_\perp^2 
 \end{equation*}
 
 \end{document}

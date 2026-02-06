@@ -1,0 +1,47 @@
+# Example initial conditions TOML
+
+[initial_conditions]
+root = "stack_all"
+coords = ["R", "varphi", "Z", "upar", "mu"]
+
+[initial_conditions.nodes.r0]
+kind = "leaf"
+tag = "R"
+sampler = "linspace"
+start = 1.0
+stop = 1.2
+num = 3
+
+[initial_conditions.nodes.phi0]
+kind = "leaf"
+tag = "varphi"
+sampler = "values"
+values = [0.0, 3.141592653589793]
+
+[initial_conditions.nodes.z0]
+kind = "leaf"
+tag = "Z"
+sampler = "constant"
+value = 0.0
+
+[initial_conditions.nodes.upar0]
+kind = "leaf"
+tag = "upar"
+sampler = "constant"
+value = 0.0
+
+[initial_conditions.nodes.mu0]
+kind = "leaf"
+tag = "mu"
+sampler = "constant"
+value = 0.0
+
+[initial_conditions.nodes.mesh_rphi]
+kind = "op"
+op = "meshgrid"
+inputs = ["r0", "phi0", "z0"]
+
+[initial_conditions.nodes.stack_all]
+kind = "op"
+op = "stack"
+inputs = ["mesh_rphi", "upar0", "mu0"]

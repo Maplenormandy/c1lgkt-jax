@@ -73,6 +73,9 @@ def _objective_magnetic_null(y: Real[ArrayLike, "2"], args: Equilibrium) -> Real
 #type UvParams = Real[ArrayLike, "8"]
 
 class UvParams(NamedTuple):
+    """
+    NamedTuple which holds parameters for computing the (u,v) fields used to define theta = arctan2(v,u)
+    """
     # Fictional o-point locations
     o1: Real[ArrayLike, "2"]
     o2: Real[ArrayLike, "2"]
@@ -208,6 +211,7 @@ def cond_bounding_box(t, y, args: ClebschFieldlineArgs, **kwargs):
 
     return (r - eq.rmin) * (eq.rmax - r) * (z - eq.zmin) * (eq.zmax - z)
 
+@jax.jit
 def fn_fieldline(t, y, args: ClebschFieldlineArgs):
     """
     """
@@ -293,6 +297,8 @@ class ClebschMapping(eqx.Module):
         """
         Computes alpha(psi, theta), sampled on the primary as well the +/-2pi branch cuts (in that order),
         along with weight functions that indicate the desired branch cut behavior. Nbranch is the number of branches (3), and N is the number of points.
+
+        TODO: Experiment with computing the branches through a vector-valued interpolation
         """
         ## First, sample alpha
         alpha = self.interp_alpha(psi, theta)
