@@ -14,38 +14,40 @@ import interpax
 import abc
 from typing import NamedTuple
 
-from jaxtyping import ArrayLike, Real, Complex, Integer
+from jaxtyping import ArrayLike, Real, Complex, Integer, Array
 
 import abc
 
 from .clebsch import ClebschMapping, ThetaMapping
+from .equilibrium import PsiTuple
+
+from .custom_types import ScalarArray, ScalarArrayLike, VectorTuple
 
 # %% Allowable field signatures
 
-
-type EmFields = tuple[Real[ArrayLike, "N"], Real[ArrayLike, "N"]]
-type GradSingleField = tuple[Real[ArrayLike, "N"], Real[ArrayLike, "N"], Real[ArrayLike, "N"]]
-type GradEmFields = tuple[GradSingleField, GradSingleField]
+type EmFieldTuple = tuple[ScalarArray, ScalarArray]
+type GradEmFieldTuple = tuple[VectorTuple, VectorTuple]
 
 
 class AbstractFieldProvider(eqx.Module):
     @abc.abstractmethod
     def __call__(self,
         t: Real,
-        r: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"],
-        psi_ev: tuple
-        ) -> EmFields:
+        r: ScalarArrayLike, varphi: ScalarArrayLike, z: ScalarArrayLike,
+        psi_ev: PsiTuple
+        ) -> EmFieldTuple:
         """
-        Compute field components (phi, A_parallel) at given (t, R, varphi, Z). Also takes in psi as auxiliary information, as many field providers will want to use it as the radial coordinate.
+        Compute field components (phi, A_parallel) at given (t, R, varphi, Z). Also takes in psi as auxiliary information,
+        as many field providers will want to use it as the radial coordinate.
         """
         raise NotImplementedError
     
     @abc.abstractmethod
     def value_and_grad(self,
         t: Real,
-        r: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"],
-        psi_ev: tuple
-        ) -> tuple[EmFields, GradEmFields]:
+        r: ScalarArrayLike, varphi: ScalarArrayLike, z: ScalarArrayLike,
+        psi_ev: PsiTuple
+        ) -> tuple[EmFieldTuple, GradEmFieldTuple]:
         """
         Computes the values and gradients of the fields with respect to (R, varphi, Z).
         """
@@ -66,18 +68,18 @@ class ZonalFieldProvider(AbstractFieldProvider):
 
     def __call__(self,
         t: Real,
-        r: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"],
-        psi_ev: tuple
-        ) -> EmFields:
+        r: ScalarArrayLike, varphi: ScalarArrayLike, z: ScalarArrayLike,
+        psi_ev: PsiTuple
+        ) -> EmFieldTuple:
         # Unpack psi and its gradients
         (psi, psidr, psidz, psidrr, psidrz, psidzz) = psi_ev
         return self.interp_phi(psi), self.interp_apar(psi)
     
     def value_and_grad(self,
         t: Real,
-        r: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"],
-        psi_ev: tuple
-        ) -> tuple[EmFields, GradEmFields]:
+        r: ScalarArrayLike, varphi: ScalarArrayLike, z: ScalarArrayLike,
+        psi_ev: PsiTuple
+        ) -> tuple[EmFieldTuple, GradEmFieldTuple]:
         # Unpack psi and its gradients
         (psi, psidr, psidz, psidrr, psidrz, psidzz) = psi_ev
 
@@ -91,44 +93,49 @@ class ZonalFieldProvider(AbstractFieldProvider):
                 (dapar * psidr, jnp.zeros_like(psi), dapar * psidz)
             )
         )
-    
+
+def sum_fourier(coefs: Complex[Array, "Nq Nmode"], phases: Real[Array, "Nq Nmode"]) -> Real[Array, "Nq"]:
+    return jnp.sum(jnp.real(coefs) * jnp.cos(phases) - jnp.imag(coefs) * jnp.sin(phases), axis=-1)
+
 class RZFourierFieldProvider(AbstractFieldProvider):
     """
     Field provider for fields which are real in (R,Z) and (sparse) Fourier in varphi. Phase = omega t - n varphi
     """
 
     # List of Fourier modes
-    n: Integer[ArrayLike, "Nmode"]
-    omega: Real[ArrayLike, "Nmode"]
+    n: Integer[Array, "Nmode"]
+    omega: Real[Array, "Nmode"]
 
     # Complex Fourier coefficients for phi and A_parallel, as functions of (R,Z)
     interp_phi_coefs: interpax.Interpolator2D
     interp_apar_coefs: interpax.Interpolator2D
-
-    def sum_fourier(coefs: Complex[ArrayLike, "Nq Nmode"], phases: Real[ArrayLike, "Nq Nmode"]) -> Real[ArrayLike, "Nq"]:
-        return jnp.sum(jnp.real(coefs) * jnp.cos(phases) - jnp.imag(coefs) * jnp.sin(phases), axis=-1)
-
-    def __call__(self,
+    
+    @jax.jit
+    def _eval(self,
         t: Real,
-        r: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"],
-        psi_ev: tuple
-        ) -> EmFields:
+        r: ScalarArray, varphi: ScalarArray, z: ScalarArray,
+        psi_ev: PsiTuple
+        ) -> EmFieldTuple:
+        """
+        Internal jitted evaluation function that assumes all inputs are already arrays of the correct shape
+        """
         # Evaluate the Fourier coefficients at the given (R,Z)
         phi_coefs = self.interp_phi_coefs(r, z)
         apar_coefs = self.interp_apar_coefs(r, z)
         phases = (self.omega * t)[None,:] - self.n[None, :] * varphi[:, None]
 
         # Now we can compute the fields by summing over modes
-        phi = RZFourierFieldProvider.sum_fourier(phi_coefs, phases)
-        apar = RZFourierFieldProvider.sum_fourier(apar_coefs, phases)
+        phi = sum_fourier(phi_coefs, phases)
+        apar = sum_fourier(apar_coefs, phases)
 
         return phi, apar
     
-    def value_and_grad(self,
+    @jax.jit
+    def _value_and_grad(self,
         t: Real,
-        r: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"],
-        psi_ev: tuple
-        ) -> tuple[EmFields, GradEmFields]:
+        r: ScalarArray, varphi: ScalarArray, z: ScalarArray,
+        psi_ev: PsiTuple
+        ) -> tuple[EmFieldTuple, GradEmFieldTuple]:
         # Evaluate the Fourier coefficients at the given (R,Z) and their gradients
         phi_coefs = self.interp_phi_coefs(r, z)
         apar_coefs = self.interp_apar_coefs(r, z)
@@ -139,14 +146,14 @@ class RZFourierFieldProvider(AbstractFieldProvider):
         phases = (self.omega * t)[None,:] - self.n[None, :] * varphi[:, None]
 
         # Now we can compute the fields and their gradients by summing over modes
-        phi = RZFourierFieldProvider.sum_fourier(phi_coefs, phases)
-        dphi_dr = RZFourierFieldProvider.sum_fourier(dphi_coefs_dr, phases)
-        dphi_dz = RZFourierFieldProvider.sum_fourier(dphi_coefs_dz, phases)
-        dphi_dvarphi = RZFourierFieldProvider.sum_fourier(-1j * self.n[None, :] * phi_coefs, phases)
-        apar = RZFourierFieldProvider.sum_fourier(apar_coefs, phases)
-        dapar_dr = RZFourierFieldProvider.sum_fourier(dapar_coefs_dr, phases)
-        dapar_dz = RZFourierFieldProvider.sum_fourier(dapar_coefs_dz, phases)
-        dapar_dvarphi = RZFourierFieldProvider.sum_fourier(-1j * self.n[None, :] * apar_coefs, phases)
+        phi = sum_fourier(phi_coefs, phases)
+        dphi_dr = sum_fourier(dphi_coefs_dr, phases)
+        dphi_dz = sum_fourier(dphi_coefs_dz, phases)
+        dphi_dvarphi = sum_fourier(-1j * self.n[None, :] * phi_coefs, phases)
+        apar = sum_fourier(apar_coefs, phases)
+        dapar_dr = sum_fourier(dapar_coefs_dr, phases)
+        dapar_dz = sum_fourier(dapar_coefs_dz, phases)
+        dapar_dvarphi = sum_fourier(-1j * self.n[None, :] * apar_coefs, phases)
 
         return (
             (phi, apar),
@@ -155,6 +162,24 @@ class RZFourierFieldProvider(AbstractFieldProvider):
                 (dapar_dr, dapar_dvarphi, dapar_dz)
             )
         )
+
+    def __call__(self,
+        t: Real,
+        r: ScalarArrayLike, varphi: ScalarArrayLike, z: ScalarArrayLike,
+        psi_ev: PsiTuple
+        ) -> EmFieldTuple:
+        r, varphi, z = jnp.asarray(r), jnp.asarray(varphi), jnp.asarray(z)
+
+        return self._eval(t, r, varphi, z, psi_ev)
+    
+    def value_and_grad(self,
+        t: Real,
+        r: ScalarArrayLike, varphi: ScalarArrayLike, z: ScalarArrayLike,
+        psi_ev: PsiTuple
+        ) -> tuple[EmFieldTuple, GradEmFieldTuple]:
+        r, varphi, z = jnp.asarray(r), jnp.asarray(varphi), jnp.asarray(z)
+
+        return self._value_and_grad(t, r, varphi, z, psi_ev)
 
 class EikonalFieldProvider(AbstractFieldProvider):
     """
@@ -169,15 +194,15 @@ class EikonalFieldProvider(AbstractFieldProvider):
 
     # List of eikonal modes; we should be thinking of this like a sum over saddle points in the stationary phase approximation
     # for the eikonal integral, maybe?
-    n: Integer[ArrayLike, "Nmode"]
-    omega: Real[ArrayLike, "Nmode"]
-    psi0: Real[ArrayLike, "Nmode"]
-    psi_scale: Real[ArrayLike, "Nmode"]
+    n: Integer[Array, "Nmode"]
+    omega: Real[Array, "Nmode"]
+    psi0: Real[Array, "Nmode"]
+    psi_scale: Real[Array, "Nmode"]
     interp_alpha0: interpax.Interpolator1D
-    alpha_scale: Real[ArrayLike, "Nmode"]
+    alpha_scale: Real[Array, "Nmode"]
 
     # Gauss-Hermite data for each mode
-    gh_coefs: Real[ArrayLike, "Nmode 4 6"] # Nmode, real/imag parts of phi/apar, then 6 GH coefficients
+    gh_coefs: Real[Array, "Nmode 4 6"] # Nmode, real/imag parts of phi/apar, then 6 GH coefficients
 
     def __init__(self,
         theta_map: ThetaMapping,
@@ -195,13 +220,13 @@ class EikonalFieldProvider(AbstractFieldProvider):
         """
         self.theta_map = theta_map
         self.clebsch = clebsch
-        self.n = n
-        self.omega = omega
-        self.psi0 = psi0
-        self.psi_scale = psi_scale
+        self.n = jnp.asarray(n)
+        self.omega = jnp.asarray(omega)
+        self.psi0 = jnp.asarray(psi0)
+        self.psi_scale = jnp.asarray(psi_scale)
         
-        self.alpha_scale = alpha_scale
-        self.gh_coefs = gh_coefs
+        self.alpha_scale = jnp.asarray(alpha_scale)
+        self.gh_coefs = jnp.asarray(gh_coefs)
 
         # Build interpolator for alpha0(psi)
         alpha0 = jax.lax.map(lambda t: clebsch.interp_alpha(clebsch.interp_alpha.x, jnp.full_like(clebsch.interp_alpha.x, t)), theta0).transpose()
@@ -259,12 +284,13 @@ class EikonalFieldProvider(AbstractFieldProvider):
 
     _grad_eval = jax.vmap(jax.jacrev(_eval, argnums=(2,3,4)), in_axes=(None, None, 0, 0, 0))
 
-    @jax.jit
     def __call__(self,
         t: Real,
-        r: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"],
-        psi_ev: tuple
-        ) -> EmFields:
+        r: ScalarArrayLike, varphi: ScalarArrayLike, z: ScalarArrayLike,
+        psi_ev: PsiTuple
+        ) -> EmFieldTuple:
+        r, varphi, z = jnp.asarray(r), jnp.asarray(varphi), jnp.asarray(z)
+
         # Unpack psi and its gradients
         (psi, psidr, psidz, psidrr, psidrz, psidzz) = psi_ev
 
@@ -273,12 +299,12 @@ class EikonalFieldProvider(AbstractFieldProvider):
 
         return jax.vmap(self._eval, in_axes=(None, 0, 0, 0))(t, psi, theta, varphi)
 
-    @jax.jit
     def value_and_grad(self,
         t: Real,
-        r: Real[ArrayLike, "N"], varphi: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"],
-        psi_ev: tuple
-        ) -> tuple[EmFields, GradEmFields]:
+        r: ScalarArrayLike, varphi: ScalarArrayLike, z: ScalarArrayLike,
+        psi_ev: PsiTuple
+        ) -> tuple[EmFieldTuple, GradEmFieldTuple]:
+        r, varphi, z = jnp.asarray(r), jnp.asarray(varphi), jnp.asarray(z)
 
         # Unpack psi and its gradients
         (psi, psidr, psidz, psidrr, psidrz, psidzz) = psi_ev

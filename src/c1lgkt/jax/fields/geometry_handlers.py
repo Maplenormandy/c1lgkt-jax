@@ -133,13 +133,13 @@ class FieldlinePusher(eqx.Module):
         )
 
         # Extract final state
-        rhog_ys, varphi_ys, thetag_ys = sol.ys
+        rhog_ys, varphi_ys, thetag_ys = sol.ys # pyright: ignore
 
         # Compute q value as number of toroidal turns per poloidal turn. We've completed one poloidal turn, so we divide the toroidal angle by 2pi
         q = varphi_ys[-1]/(2*jnp.pi)
 
         # Get the densely evaluated field line points to compute dtheta
-        rhog, varphi, thetag = jax.lax.map(sol.evaluate, jnp.linspace(0, sol.ts[-1], 256, endpoint=False))
+        rhog, varphi, thetag = jax.lax.map(sol.evaluate, jnp.linspace(0, sol.ts[-1], 256, endpoint=False)) # pyright: ignore
         # Difference between geometric and straight-field-line poloidal angle
         dtheta = thetag - (varphi / varphi_ys[-1]) * 2 * jnp.pi
         # Resample dtheta onto a uniform grid in thetag

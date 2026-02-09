@@ -6,7 +6,7 @@ import numpy as np
 
 import jax
 import jax.numpy as jnp
-from jaxtyping import ArrayLike, Real, Bool, PyTree
+from jaxtyping import ArrayLike, Real, Bool, PyTree, Array
 
 from typing import NamedTuple
 
@@ -14,15 +14,15 @@ class PunctureData(NamedTuple):
     """
     NamedTuple holding puncture data.
 
-    t_punc: Real[ArrayLike, "Np"]
+    t_punc: Real[ArrayLike, "Npunc"]
         Times of punctures
-    y_punc: PyTree of Real[ArrayLike, "Np"]
+    y_punc: PyTree of Real[ArrayLike, "Npunc"]
         States at punctures
     """
-    tp: Real[ArrayLike, "Np"]
-    yp: PyTree | None
+    tp: Real[ArrayLike, "Npunc"]
+    yp: PyTree[Real[ArrayLike, "Npunc"]]
 
-def compute_punctures(ts: Real[ArrayLike, "Nt"], ys, fpunc: Real[ArrayLike, "Nt N"], condpunc: Bool[ArrayLike, "Nt"] | None = None, period=-1):
+def compute_punctures(ts: Real[ArrayLike, "Nt"], ys: PyTree[Real[ArrayLike, "Nt *shape"]], fpunc: Real[ArrayLike, "Nt N"], condpunc: Bool[ArrayLike, "Nt"] | None = None, period: float =-1):
     """
     Compute punctures. Returns a tuples consisting of positive punctures and
     one consisting of negative punctures.
@@ -39,6 +39,11 @@ def compute_punctures(ts: Real[ArrayLike, "Nt"], ys, fpunc: Real[ArrayLike, "Nt 
 
     Note that any inf values should be filtered out ahead of time
     """
+    ts = np.asarray(ts)
+    fpunc = np.asarray(fpunc)
+    if condpunc is not None:
+        condpunc = np.asarray(condpunc)
+
     # Get the number of particles
     nump = fpunc.shape[1]
 
@@ -108,14 +113,14 @@ def compute_punctures(ts: Real[ArrayLike, "Nt"], ys, fpunc: Real[ArrayLike, "Nt 
 
         # Compute tree transposes
         if len(yp_ppuncs) > 0:
-            yp_ppuncs = jax.tree.map(lambda *xs: jnp.stack(xs), *yp_ppuncs)
+            yp_ppuncs = jax.tree.map(lambda *xs: np.stack(xs), *yp_ppuncs)
         else:
-            yp_ppuncs = jax.tree.map(lambda x: jnp.empty((0,)), ys)
+            yp_ppuncs = jax.tree.map(lambda x: np.zeros((0,)), ys)
         ppuncs[k] = PunctureData(tp_ppuncs, yp_ppuncs)
         if len(yp_npuncs) > 0:
-            yp_npuncs = jax.tree.map(lambda *xs: jnp.stack(xs), *yp_npuncs)
+            yp_npuncs = jax.tree.map(lambda *xs: np.stack(xs), *yp_npuncs)
         else:
-            yp_npuncs = jax.tree.map(lambda x: jnp.empty((0,)), ys)
+            yp_npuncs = jax.tree.map(lambda x: np.zeros((0,)), ys)
         npuncs[k] = PunctureData(tp_npuncs, yp_npuncs)
 
     return ppuncs, npuncs

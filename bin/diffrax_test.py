@@ -63,6 +63,7 @@ theta_x1 = theta_map(jnp.array([theta_map.nulls.x1.rz[0]]), jnp.array([theta_map
 theta_x2 = theta_map(jnp.array([theta_map.nulls.x2.rz[0]]), jnp.array([theta_map.nulls.x2.rz[1]]))[0]
 
 field_provider = EikonalFieldProvider(
+    theta_map=theta_map,
     clebsch = clebsch,
     n = jnp.array([3, 3], dtype=int),
     omega = jnp.array([0.0, 0.0]),
@@ -80,7 +81,7 @@ pp = particle_motion.elec
 term = diffrax.ODETerm(particle_motion.f_driftkinetic)
 solver = diffrax.Dopri5()
 saveat = diffrax.SaveAt(t0=True, t1=True, steps=True)
-args = particle_motion.PusherArgs(eq=eq, pp=pp, theta_map=theta_map, fields=[field_provider])
+args = particle_motion.PusherArgs(eq=eq, pp=pp, fields=[field_provider])
 stepsize_controller = diffrax.PIDController(rtol=1e-8, atol=1e-8)
 
 num_particles = 4096

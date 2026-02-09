@@ -54,10 +54,9 @@ class PusherArgs(NamedTuple):
     """
     NamedTuple holding arguments for all particle pushers. Note most things here are optional.
     """
-    eq: Equilibrium | None = None
-    pp: ParticleParams | None = None
-    #theta_map: ThetaMapping | None = None
-    fields: list[AbstractFieldProvider] | None = None
+    eq: Equilibrium
+    pp: ParticleParams
+    fields: list[AbstractFieldProvider]
 
 
 

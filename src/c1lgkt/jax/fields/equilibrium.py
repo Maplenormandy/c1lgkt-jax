@@ -12,9 +12,12 @@ import interpax
 
 import matplotlib.pyplot as plt
 import matplotlib as mpl
+from matplotlib.axes import Axes
 
 from typing import Type, TypeVar, NamedTuple
-from jaxtyping import ArrayLike, Real
+from jaxtyping import ArrayLike, Real, Array
+
+from .custom_types import ScalarArray, ScalarArrayLike, VectorArray
 
 import re
 
@@ -26,6 +29,10 @@ setter_code = '\n'.join('self.' + s + ' = kwargs["' + s + '"]' for s in eqd_vars
 
 # Some static typing stuff to help with type hinting
 T = TypeVar('T', bound='Equilibrium')
+
+
+type PsiTuple = tuple[ScalarArray, ScalarArray, ScalarArray, ScalarArray, ScalarArray, ScalarArray]
+type FfTuple = tuple[ScalarArray, ScalarArray]
 
 
 class Equilibrium(eqx.Module):
@@ -70,8 +77,8 @@ class Equilibrium(eqx.Module):
     zmin: float
     zmax: float
 
-    rgrid: Real[ArrayLike, "{Nr}"]
-    zgrid: Real[ArrayLike, "{Nz}"]
+    rgrid: Real[Array, "{Nr}"]
+    zgrid: Real[Array, "{Nz}"]
 
     raxis: float
     zaxis: float
@@ -79,13 +86,13 @@ class Equilibrium(eqx.Module):
     rx: float
     zx: float
 
-    psi: Real[ArrayLike, "{Npsi}"]
-    ff: Real[ArrayLike, "{Npsi}"]
+    psi: Real[Array, "{Npsi}"]
+    ff: Real[Array, "{Npsi}"]
 
-    psirz: Real[ArrayLike, "{Nz} {Nr}"]
+    psirz: Real[Array, "{Nz} {Nr}"]
 
-    wallrz: Real[ArrayLike, "2 Nwall"]
-    lcfsrz: Real[ArrayLike, "2 Nlcfs"]
+    wallrz: Real[Array, "2 Nwall"]
+    lcfsrz: Real[Array, "2 Nlcfs"]
 
     interp_ff: interpax.Interpolator1D
     interp_psi: interpax.Interpolator2D
@@ -120,12 +127,14 @@ class Equilibrium(eqx.Module):
         self.interp_psi = interpax.Interpolator2D(self.rgrid, self.zgrid, self.psirz.T, method='cubic2')
 
     @jax.jit
-    def compute_bv(self, r, z):
+    def compute_bv(self, r: ScalarArrayLike, z: ScalarArrayLike) -> VectorArray:
         """
         Compute the magnetic field vector;
         B = (Br, Bphi, Bz) = (-1/R dpsi/dz, F(psi)/R, 1/R dpsi/dR)
         """
         eq = self
+        r = jnp.asarray(r)
+        z = jnp.asarray(z)
 
         # Evaluate psi and its derivatives
         psi = eq.interp_psi(r, z)
@@ -139,10 +148,13 @@ class Equilibrium(eqx.Module):
         return jnp.array([-dzpsi / r, -ff / r, drpsi / r])
     
     @jax.jit
-    def compute_psi_and_ff(self, r, z):
+    def compute_psi_and_ff(self, r: ScalarArrayLike, z: ScalarArrayLike) -> tuple[PsiTuple, FfTuple]:
         """
         Shorthand function for computing psi, ff, and its derivatives
         """
+        r = jnp.asarray(r)
+        z = jnp.asarray(z)
+
         # Evaluate psi and its derivatives
         psi = self.interp_psi(r, z)
         psidr = self.interp_psi(r, z, dx=1)
@@ -163,10 +175,12 @@ class Equilibrium(eqx.Module):
         return psi_ev, ff_ev
     
     @jax.jit
-    def compute_geom_terms(self, r, psi_ev, ff_ev):
+    def compute_geom_terms(self, r: ScalarArrayLike, psi_ev: PsiTuple, ff_ev: FfTuple) -> tuple[VectorArray, VectorArray, ScalarArray, VectorArray, VectorArray]:
         """
         Computes unit vector b, |B|, grad|B|, and curl(b) given psi and ff evaluations
         """
+        r = jnp.asarray(r)
+
         (psi, psidr, psidz, psidrr, psidrz, psidzz) = psi_ev
         (ff, dff) = ff_ev
 
@@ -199,7 +213,7 @@ class Equilibrium(eqx.Module):
         curlbu = (curlb - jnp.cross(gradmodb, bu, axis=0)) / modb[None, ...]
         return bv, bu, modb, gradmodb, curlbu
     
-    def plot_magnetic_geometry(self, ax: mpl.axes.Axes, monochrome=True, alpha=1.0):
+    def plot_magnetic_geometry(self, ax: Axes, monochrome=True, alpha=1.0):
         """
         Function which plots the magnetic geometry (flux surfaces, wall, LCFS) on a given axis
         """

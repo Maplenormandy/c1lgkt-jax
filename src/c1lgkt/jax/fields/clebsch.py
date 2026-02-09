@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 
 from typing import Type, TypeVar, NamedTuple
-from jaxtyping import ArrayLike, Real
+from jaxtyping import ArrayLike, Real, Array
 
 from .equilibrium import Equilibrium
 
@@ -31,20 +31,20 @@ class MagneticNull(NamedTuple):
     NamedTuple which collects useful data for nulls in the poloidal magnetic field
     """
     # R, Z coordinates
-    rz: Real[ArrayLike, "2"]
+    rz: Real[Array, "2"]
     # psi value of the null
     psi: Real
 
     # Hessian of psi at the null
-    hess: Real[ArrayLike, "2 2"]
+    hess: Real[Array, "2 2"]
 
     # Eigendecomposition of the Hessian, H = Q Lambda Q^T
-    lam: Real[ArrayLike, "2"]
-    q: Real[ArrayLike, "2 2"]
+    lam: Real[Array, "2"]
+    q: Real[Array, "2 2"]
 
     # S matrix, which gives Sylvester's inertia for the Hessian H = S D S^T where D = diag(\pm 1, \pm 1).
-    s: Real[ArrayLike, "2 2"]
-    sinv: Real[ArrayLike, "2 2"]
+    s: Real[Array, "2 2"]
+    sinv: Real[Array, "2 2"]
 
 class MagneticNullInfo(NamedTuple):
     """
@@ -58,7 +58,7 @@ class MagneticNullInfo(NamedTuple):
     # Minor radius of the outboard midplane, (rmax - rmin)/2
     amid: Real
 
-def _objective_magnetic_null(y: Real[ArrayLike, "2"], args: Equilibrium) -> Real[ArrayLike, "2"]:
+def _objective_magnetic_null(y: Real[Array, "2"], args: Equilibrium) -> Real[Array, "2"]:
     """
     Objective function for finding magnetic nulls, i.e. points where grad(psi) = 0
     """
@@ -77,13 +77,15 @@ class UvParams(NamedTuple):
     NamedTuple which holds parameters for computing the (u,v) fields used to define theta = arctan2(v,u)
     """
     # Fictional o-point locations
-    o1: Real[ArrayLike, "2"]
-    o2: Real[ArrayLike, "2"]
+    o1: Real[Array, "2"]
+    o2: Real[Array, "2"]
     # Inertia-related parameters
-    p1: Real[ArrayLike, "2"]
-    p2: Real[ArrayLike, "2"]
+    p1: Real[Array, "2"]
+    p2: Real[Array, "2"]
 
+    @staticmethod
     def from_array(arr: Real[ArrayLike, "8"]) -> "UvParams":
+        arr = jnp.array(arr)
         return UvParams(
             o1=arr[0:2],
             o2=arr[2:4],
@@ -150,7 +152,7 @@ _hess_theta = jax.jacfwd(_grad_theta, argnums=(0, 1))
 ## These functions help compute the parameters needed for the (u,v) field
 
 @jax.jit
-def _objective_uv_params(y: Real[ArrayLike, "4"], args: MagneticNullInfo) -> Real[ArrayLike, "4"]:
+def _objective_uv_params(y: Real[Array, "4"], args: MagneticNullInfo) -> Real[Array, "4"]:
     """
     Objective function which ensures that grad(theta) = 0 at the x-points. This is the coarse version without inertia constraints.
     """
@@ -169,7 +171,7 @@ def _objective_uv_params(y: Real[ArrayLike, "4"], args: MagneticNullInfo) -> Rea
     return jnp.array([dth1[0], dth1[1], dth2[0], dth2[1]])
 
 @jax.jit
-def _objective_uv_params_refine(y: Real[ArrayLike, "8"], args: MagneticNullInfo) -> Real[ArrayLike, "8"]:
+def _objective_uv_params_refine(y: Real[Array, "8"], args: MagneticNullInfo) -> Real[Array, "8"]:
     """
     Objective function which ensures that grad(theta) = 0 at the x-points, as well as enforcing inertia constraints.
     """
@@ -237,6 +239,10 @@ def fn_fieldline(t, y, args: ClebschFieldlineArgs):
 
 # %% Clebsch field class
 
+type ScalarArray = Real[Array, "Nq"]
+type ScalarArrayLike = Real[ArrayLike, "Nq"]
+type VectorArray = Real[Array, "3 Nq"]
+
 class ThetaMapping(eqx.Module):
     """
     Class which is responsible for computing the theta mapping and its derivatives
@@ -258,30 +264,38 @@ class ThetaMapping(eqx.Module):
 
     ## Public methods which use internally-stored parameters
 
-    def _compute_uv(self, r: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"]) -> tuple[Real[ArrayLike, "N"], Real[ArrayLike, "N"]]:
+    def _compute_uv(self, r: ScalarArrayLike, z: ScalarArrayLike) -> tuple[ScalarArray, ScalarArray]:
         """
         Computes the auxiliary (u,v) fields used to compute theta = arctan2(v,u) using the internally-stored parameters.
         """
+        r = jnp.asarray(r)
+        z = jnp.asarray(z)
         return jax.vmap(_compute_uv, in_axes=(0,0,None,None))(r, z, self.nulls, self.uv_params)
     
-    def __call__(self, r: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"]) ->  Real[ArrayLike, "N"]:
+    def __call__(self, r: ScalarArrayLike, z: ScalarArrayLike) ->  ScalarArray:
         """
         Computes theta = arctan2(v,u) using the auxiliary (u,v) fields and the internally-stored parameters.
         """
+        r = jnp.asarray(r)
+        z = jnp.asarray(z)
         u, v = self._compute_uv(r, z)
         return jnp.arctan2(v, u)
 
-    def grad(self, r: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"]) -> tuple[Real[ArrayLike, "N"], Real[ArrayLike, "N"]]:
+    def grad(self, r: ScalarArrayLike, z: ScalarArrayLike) -> tuple[ScalarArray, ScalarArray]:
         """
         Computes the smoothly-varying gradient of theta = arctan2(v,u) (i.e. across the branch cut) with respect to (r,z)
         using the auxiliary (u,v) fields and the internally-stored parameters.
         """
+        r = jnp.asarray(r)
+        z = jnp.asarray(z)
         return jax.vmap(_grad_theta, in_axes=(0,0,None,None))(r, z, self.nulls, self.uv_params)
 
-    def hessian(self, r: Real[ArrayLike, "N"], z: Real[ArrayLike, "N"]) -> tuple[tuple[Real[ArrayLike, "N"], Real[ArrayLike, "N"]], tuple[Real[ArrayLike, "N"], Real[ArrayLike, "N"]]]:
+    def hessian(self, r: ScalarArrayLike, z: ScalarArrayLike) -> tuple[tuple[ScalarArray, ScalarArray], tuple[ScalarArray, ScalarArray]]:
         """
         Computes the Hessian of theta = arctan2(v,u) with respect to (r,z) using the auxiliary (u,v) fields and the internally-stored parameters.
         """
+        r = jnp.asarray(r)
+        z = jnp.asarray(z)
         return jax.vmap(_hess_theta, in_axes=(0,0,None,None))(r, z, self.nulls, self.uv_params)
         
 # %% Class for Clebsch field?
@@ -293,13 +307,16 @@ class ClebschMapping(eqx.Module):
     """
     interp_alpha: interpax.Interpolator2D
 
-    def __call__(self, psi: Real[ArrayLike, "N"], theta: Real[ArrayLike, "N"]) -> tuple[Real[ArrayLike, "Nbranch N"], Real[ArrayLike, "Nbranch N"]]:
+    def __call__(self, psi: ScalarArrayLike, theta: ScalarArrayLike) -> tuple[Real[Array, "Nbranch Nq"], Real[Array, "Nbranch Nq"]]:
         """
         Computes alpha(psi, theta), sampled on the primary as well the +/-2pi branch cuts (in that order),
         along with weight functions that indicate the desired branch cut behavior. Nbranch is the number of branches (3), and N is the number of points.
 
         TODO: Experiment with computing the branches through a vector-valued interpolation
         """
+        psi = jnp.asarray(psi)
+        theta = jnp.asarray(theta)
+
         ## First, sample alpha
         alpha = self.interp_alpha(psi, theta)
         alpha_p = self.interp_alpha(psi, theta + 2*jnp.pi)
@@ -336,6 +353,7 @@ class ClebschMappingBuilder(eqx.Module):
         Takes a guess for the R,Z coordinates of a magnetic null and refines it using Newton's method. Then, computes
         auxiliary information such as the Hessian, eigenvalues/eigenvectors, and Sylvester's inertia matrix Q.
         """
+        rz_guess = jnp.asarray(rz_guess)
 
         # Refine the magnetic null using Newton's method
         sol = optx.root_find(_objective_magnetic_null, self.newton_magnetic_null, rz_guess, args=eq, throw=False)
@@ -399,7 +417,7 @@ class ClebschMappingBuilder(eqx.Module):
         return UvParams.from_array(sol_refine.value)
     
     @partial(jax.vmap, in_axes=(None, 0, None))
-    def _compute_alpha(self, r0, args: ClebschFieldlineArgs):
+    def _compute_alpha(self, r0: Real, args: ClebschFieldlineArgs):
         """
         Starting from initial major radius r0 on the magnetic axis midplane, computes alpha by integrating along the field line
         """
@@ -448,8 +466,8 @@ class ClebschMappingBuilder(eqx.Module):
             throw=False
         )
 
-        r_fwd, z_fwd, alpha_fwd = sol_fwd.ys
-        r_bak, z_bak, alpha_bak = sol_bak.ys
+        r_fwd, z_fwd, alpha_fwd = sol_fwd.ys # pyright: ignore
+        r_bak, z_bak, alpha_bak = sol_bak.ys # pyright: ignore
 
         # Find the first infinite value index in the forward solution
         fwd_ind = jnp.argmax(jnp.isinf(alpha_fwd))
