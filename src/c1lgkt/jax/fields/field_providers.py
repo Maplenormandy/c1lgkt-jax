@@ -5,23 +5,27 @@
 This file contains type definitions for field interpolators
 """
 
+from operator import eq
+
 import jax
 import jax.numpy as jnp
 import jax.tree_util as jtu
 import equinox as eqx
 import interpax
 
+import numpy as np
+
 import abc
-from typing import NamedTuple
+from typing import NamedTuple, Type
 
 from jaxtyping import ArrayLike, Real, Complex, Integer, Array
 
 import abc
 
 from .clebsch import ClebschMapping, ThetaMapping
-from .equilibrium import PsiTuple
+from .equilibrium import Equilibrium, PsiTuple
 
-from .custom_types import ScalarArray, ScalarArrayLike, VectorTuple
+from ..custom_types import ScalarArray, ScalarArrayLike, VectorTuple
 
 # %% Allowable field signatures
 
@@ -93,6 +97,70 @@ class ZonalFieldProvider(AbstractFieldProvider):
                 (dapar * psidr, jnp.zeros_like(psi), dapar * psidz)
             )
         )
+
+    @classmethod
+    def from_pfile(cls: Type[ZonalFieldProvider], filename: str, eq: Equilibrium) -> ZonalFieldProvider:
+        with open(filename, 'r') as f:
+            data = f.readlines()
+
+            # Find the line where the data starts
+            for line in range(len(data)):
+                if 'er(kV/m)' in data[line]:
+                    break
+
+            # Determine the number of psi points from the header line
+            tokens = data[line].split()
+            n_psi = int(tokens[0])
+
+            # Read in the grid values
+            psi_grid = np.zeros(n_psi)
+            er_grid = np.zeros(n_psi)
+            erprime_grid = np.zeros(n_psi)
+
+            # Now read in the data
+            for k in range(line+1, line+1+n_psi):
+                values = list(map(lambda t: float(t.strip()), data[k].split()))
+                psi_grid[k - (line+1)] = values[0] * eq.psix
+                er_grid[k - (line+1)] = values[1]
+                erprime_grid[k - (line+1)] = values[2] / eq.psix
+
+            # We add a small scrape-off-layer region to ensure the fields go to zero
+            scale = (1.0 / eq.psix)/0.005
+            c1 = er_grid[-1]
+            c2 = erprime_grid[-1] + scale * c1
+
+            # Create extra grid points beyond the LCS
+            psi_extra = np.arange(1.005, 1.2, 0.005) * eq.psix
+
+            # Compute the fields at the extra grid points using an exponential decay model
+            er_extra = (c1 + c2 * (psi_extra - eq.psix)) * np.exp(-scale * (psi_extra - eq.psix))
+            erprime_extra = (-scale * er_extra + c2 * np.exp(-scale * (psi_extra - eq.psix)))
+
+            # Extend the grids with the extra points
+            psi_grid = np.concatenate((psi_grid, psi_extra))
+            er_grid = np.concatenate((er_grid, er_extra))
+            erprime_grid = np.concatenate((erprime_grid, erprime_extra))
+
+            # In order to fit the electric field and its derivative, we upsample the data
+            er_spline = interpax.Interpolator1D(psi_grid, er_grid, kind='cubic', fx=erprime_grid)
+            # Hardcoded upsampling to 512 points; should be good enough for now, but could make this more flexible later if needed
+            psi_dense = jnp.linspace(0.0, eq.psix*1.2, 512, endpoint=False)
+            er_dense = er_spline(psi_dense)
+            
+            # We need to compute R on the outboard midplane in order to integrate the electric field
+            r_outer = jnp.linspace(eq.raxis, eq.rmax, 128)
+            psi_outer = eq.interp_psi(r_outer, jnp.full_like(r_outer, eq.zaxis))
+            interp_router = interpax.Interpolator1D(psi_outer, r_outer, method='cubic2')
+            r_dense = interp_router(psi_dense)
+
+            # Integrate the electric field to get the potential
+            phi = jnp.concatenate((jnp.array([0]), jnp.cumsum((er_dense[:-1] + er_dense[1:]) * (jnp.diff(r_dense)) * 0.5)))
+
+            # Set up interpolators
+            interp_phi = interpax.Interpolator1D(psi_dense, phi - phi[-1], method='cubic2')
+            interp_apar = interpax.Interpolator1D(psi_dense, jnp.zeros_like(psi_dense), method='cubic2')
+
+            return cls(interp_phi, interp_apar)
 
 def sum_fourier(coefs: Complex[Array, "Nq Nmode"], phases: Real[Array, "Nq Nmode"]) -> Real[Array, "Nq"]:
     return jnp.sum(jnp.real(coefs) * jnp.cos(phases) - jnp.imag(coefs) * jnp.sin(phases), axis=-1)
@@ -194,7 +262,10 @@ class EikonalFieldProvider(AbstractFieldProvider):
 
     # List of eikonal modes; we should be thinking of this like a sum over saddle points in the stationary phase approximation
     # for the eikonal integral, maybe?
+    # n is the toroidal mode number
     n: Integer[Array, "Nmode"]
+    # omega is the frequency, phase ~ omega t - n (varphi - alpha_RZ). Note the toroidal phase
+    # velocity is omega/n
     omega: Real[Array, "Nmode"]
     psi0: Real[Array, "Nmode"]
     psi_scale: Real[Array, "Nmode"]
@@ -327,3 +398,4 @@ class EikonalFieldProvider(AbstractFieldProvider):
                 (dapar_dpsi * psidr + dapar_dtheta * thetadr, dapar_dvarphi, dapar_dpsi * psidz + dapar_dtheta * thetadz)
             )
         )
+# %%

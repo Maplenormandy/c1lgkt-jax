@@ -10,6 +10,12 @@ from jaxtyping import ArrayLike, Real, Bool, PyTree, Array
 
 from typing import NamedTuple
 
+from functools import reduce
+
+from .particle_motion import PusherArgs
+
+from ..custom_types import ScalarArray, ScalarArrayLike
+
 class PunctureData(NamedTuple):
     """
     NamedTuple holding puncture data.
@@ -124,3 +130,70 @@ def compute_punctures(ts: Real[ArrayLike, "Nt"], ys: PyTree[Real[ArrayLike, "Nt 
         npuncs[k] = PunctureData(tp_npuncs, yp_npuncs)
 
     return ppuncs, npuncs
+
+@jax.jit
+def compute_integrals(t: Real, state: PyTree[ScalarArray], args: PusherArgs) -> tuple[ScalarArray, ScalarArray]:
+    """
+    From the time, state, and PusherArgs, compute the Hamiltonian and the canonical toroidal angular momentum.
+    """
+    # Unpack the arguments
+    r, varphi, z, upar, mu = state
+    eq = args.eq
+    pp = args.pp
+    fields = args.fields
+
+    psi_ev, ff_ev = eq.compute_psi_and_ff(r, z)
+    bv = eq.compute_bv(r, z)
+    modb = jnp.linalg.norm(bv, axis=0)
+
+    # Compute the fields
+    fields_eval = [f(t, r, varphi, z, psi_ev) for f in fields]
+    # Sum up the values
+    fields_eval_sum = reduce(lambda a, b: jax.tree.map(lambda x, y: x + y, a, b), fields_eval)
+    phi, apar = fields_eval_sum
+
+    # Compute the integrals
+    ppar = pp.m * upar - pp.z * apar
+    ham = 0.5 * ppar**2 / pp.m + mu * modb + pp.z * phi
+    lphi = pp.z * psi_ev[0] + ppar * r * bv[1,:] / modb
+
+    return ham, lphi
+
+def compute_parallel_energy(t: Real, state: PyTree[ScalarArray], integrals: tuple[Real, Real], omega: Real, args: PusherArgs) -> tuple[ScalarArray, ScalarArray]:
+    """
+    From the time, state, integrals, and PusherArgs, compute the parallel energy.
+    Note that the upar term in the state is ignored; the parallel energy is the
+    Kpar = ppar**2 / 2 m term in the Hamiltonian, where ppar = m upar - z apar
+
+    For convenience, it returns a tuple of (Kpar, upar0) which is useful for computing the initial
+    parallel velocity. Kpar = (upar - upar0)**2 / 2 m
+    """
+
+    # Unpack the arguments
+    r, varphi, z, upar, mu = state
+    eq = args.eq
+    pp = args.pp
+    fields = args.fields
+    ham, lphi = integrals
+
+    # Compute the adiabatic invariant
+    kam = ham - omega * lphi
+
+    # Compute magnetic stuff
+    psi_ev, ff_ev = eq.compute_psi_and_ff(r, z)
+    bv = eq.compute_bv(r, z)
+    modb = jnp.linalg.norm(bv, axis=0)
+
+    # Compute the fields
+    fields_eval = [f(t, r, varphi, z, psi_ev) for f in fields]
+    # Sum up the values
+    fields_eval_sum = reduce(lambda a, b: jax.tree.map(lambda x, y: x + y, a, b), fields_eval)
+    phi, apar = fields_eval_sum
+
+    # Compute the parallel energy
+    ppar0 = pp.m * omega * r * bv[1,:] / modb
+    kpar = kam + ppar0**2 / (2 * pp.m) - mu * modb - pp.z * (phi - omega * psi_ev[0])
+
+    upar0 = (ppar0 + pp.z * apar) / pp.m
+
+    return kpar, upar0

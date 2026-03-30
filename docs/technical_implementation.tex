@@ -61,6 +61,7 @@ and \(m,q\) are the species mass and charge respectively.
 
 In the current implementation, we only include the Hamiltonian portion \(A_\parallel^{(h)}\) in the particle pusher.
 Note that the generalized potential \(\Phi \approx \phi - \frac{m_s}{2 q_s} |\vb{v}_E|^2\) where \(\vb{v}_E = \frac{\vu{b} \times \nabla \phi}{B}\) is also written here for completeness, although we do not use it.
+[TODO: Add gyroaverage operators where they belong]
 
 \subsection{Cylindrical coordinates}
 We primarily work in a right-handed \((R,\varphi,Z)\) cylindrical coordinate system.
@@ -156,6 +157,37 @@ In the JAX version, automatic differentiation is used to compute gradients of \(
 \section{Monte Carlo Solution of Transport Equations}
 
 In this section, we discuss the strategy for using Monte Carlo in combination with the Feynman-Kac formula to solve certain transport equations.
+
+\subsection{Collision Model}
+
+First, we discuss requirements for the collision model that we use; we follow [Hirvijoki PoP 2013].
+We first consider the nonlinear (Landau) Fokker-Planck collision operator in non-canonical particle phase-space \((\vb{x}, \vb{p} = m\vb{v})\):
+\begin{equation*}
+	C[f] = -\pdv{p_i} \left[K_i f - D_{ij} \pdv{f}{p_j}\right]
+\end{equation*}
+where \(K_i = \sum_b K_i^{ab}\) and \(D_{ij} = \sum_b D_{ij}^{ab}\) are the collisional drag and diffusion coefficients respectively.
+These coefficients satisfy the `Einstein relation' \(\pdv{p_i} D_{ij}^{ab} = \frac{m_b}{m_a} K_j^{ab}\).
+
+First we consider the kinetic momentum \(p = mv\) and pitch angle \(\xi = v_\parallel / v\) coordinates.
+These are also related to the gyrokinetic parallel velocity \(u_\parallel\) and magnetic moment \(\mu\) coordinates by a change of variables,
+\begin{equation*}
+	\begin{gathered}
+		u_\parallel = \xi p / m \\
+		\mu = \frac{p^2}{2mB} (1-\xi^2)
+	\end{gathered}
+\end{equation*}
+we can check the Jacobian
+\begin{equation*}
+	\begin{bmatrix}
+		\partial_p u_\parallel & \partial_\xi u_\parallel \\
+		\partial_p \mu & \partial_\xi \mu
+	\end{bmatrix} =
+	\begin{bmatrix}
+		\xi / m & p / m \\
+		p(1-\xi^2) / mB & -p^2 \xi / mB
+	\end{bmatrix}
+\end{equation*}
+
 
 \subsection{Problem Setup}
 
@@ -269,6 +301,15 @@ Average over a finite time interval \([t_0, t_1]\) of IVP -> approximated by the
 \begin{equation*}
 	\ev{A} = \sum_{\text{periodic orbits } p} w_p \ev{A}_p \approx \sum_{\text{some smaller set of periodic orbits } p} \tilde{w}_p \ev{A}_p
 \end{equation*}
+
+
+\section{Field Equations}
+
+\subsection{Computing Charge and Current Densities}
+
+
+
+
 
 
 \section{\(C^1\) interpolation on unstructured meshes}
@@ -481,6 +522,9 @@ We have the following coordinate transforms
 \end{equation*}
 
 \section{Miscellania}
+
+\subsection{Computing Parallel Kinetic Energy}
+
 
 \subsection{Derivative Operators}
 

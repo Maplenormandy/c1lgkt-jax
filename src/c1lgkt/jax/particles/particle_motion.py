@@ -4,7 +4,7 @@ Contains codes for the vector fields associated with particle motion.
 Typically everything is done in cylindrical coordinates (R, phi, Z).
 """
 
-from typing import NamedTuple
+from typing import NamedTuple, TypeVar, Generic
 
 from ..fields.equilibrium import Equilibrium
 from ..fields.clebsch import ThetaMapping
@@ -12,10 +12,15 @@ from ..fields.field_providers import AbstractFieldProvider
 import jax.numpy as jnp
 import jax
 import interpax
+import jax.tree_util as jtu
 
-from jaxtyping import ArrayLike, Real
+from jaxtyping import ArrayLike, Real, PyTree
+from diffrax._custom_types import RealScalarLike, VF, Y, Args, Control
+from diffrax._path import AbstractPath
 
 from functools import reduce
+
+from diffrax import AbstractTerm
 
 # %% Arguments for the various pushers
 
@@ -117,6 +122,121 @@ def f_driftkinetic(t, state, args: PusherArgs):
 
     return (drdt, dvarphidt, dzdt, dupardt, dmudt)
 
+
+
+# %% Term for implementing drift-kinetic pushing simultaneously with collisions
+
+_Control = TypeVar("_Control", bound=Control)
+
+def _prod(vf, control):
+    return jnp.tensordot(jnp.conj(vf), control, axes=jnp.ndim(control))
+
+def _sum(*x):
+    return sum(x[1:], x[0])
+
+class GyroSDETerm(AbstractTerm, Generic[_Control]):
+    control: AbstractPath[_Control]
+
+    def vf(self, t: RealScalarLike, y: Y, args: PusherArgs) -> tuple[PyTree[ArrayLike], ...]:
+        # Unpack the state
+        r, varphi, z, upar, mu = y
+
+        # Unpack the arguments
+        eq = args.eq
+        pp = args.pp
+        #theta_map = args.theta_map
+        fields = args.fields
+        
+        ## Magnetic terms
+        psi_ev, ff_ev = eq.compute_psi_and_ff(r, z)
+        bv, bu, modb, gradmodb, curlbu = eq.compute_geom_terms(r, psi_ev, ff_ev)
+        # Bstar and Bstar parallel
+        bstar = bv + (pp.m / pp.z) * curlbu * upar[None, ...]
+        bstarpar = jnp.sum(bu*bstar, axis=0)
+
+        ## Compute the fields
+
+        # Evaluate the fields and their gradients over the list of field providers
+        fields_eval = [f.value_and_grad(t, r, varphi, z, psi_ev) for f in fields]
+        # Sum up the values and gradients
+        fields_eval_sum = reduce(lambda a, b: jax.tree.map(lambda x, y: x + y, a, b), fields_eval)
+        # Unpack
+        phi, apar = fields_eval_sum[0]
+        (dphi_dr, dphi_dvarphi, dphi_dz), (dapar_dr, dapar_dvarphi, dapar_dz) = fields_eval_sum[1]
+
+        ## Compute gradients of the Hamiltonian
+
+        # p_|| = dH/du_||
+        ppar = pp.m * upar - pp.z * apar
+
+        # Electric potential gradient
+        gradphi = jnp.array([dphi_dr, dphi_dvarphi / r, dphi_dz])
+        # Magnetic potential gradient
+        gradapar = jnp.array([dapar_dr, dapar_dvarphi / r, dapar_dz])
+        
+        ## Finally compute the (spatial) gradient of the Hamiltonian
+        gradh = mu * gradmodb + pp.z * gradphi - (pp.z / pp.m) * ppar[None, ...] * gradapar
+
+        rdot = (jnp.cross(bu, gradh, axis=0) / pp.z + ppar[None, ...] * bstar / pp.m) / bstarpar[None, ...]
+
+        ## Drift part of the SDE
+        drdt = rdot[0, ...]
+        dvarphidt = rdot[1, ...] / r
+        dzdt = rdot[2, ...]
+        dupardt = -(jnp.sum(bstar*gradh, axis=0) / bstarpar) / pp.m
+        dmudt = jnp.zeros_like(mu)
+
+        vf_drift = (drdt, dvarphidt, dzdt, dupardt, dmudt)
+
+        ## Diffusion part of the SDE
+
+        ## Compute coordinate transform
+        # kinetic momentum, I think?
+        modp = jnp.sqrt(ppar**2 + 2 * pp.m * mu * modb)
+        # pitch angle
+        xi = ppar / modp
+
+        kappax = 1.0
+        kappapar = 1.0
+        kappaperp = 1.0
+
+        
+        drdwt = (jnp.array([1.0 - bu[0, ...]**2, -bu[0, ...] * bu[1, ...], -bu[0, ...] * bu[2, ...]]) * kappax)
+        dvarphidwt = (jnp.array([-bu[1, ...] * bu[0, ...], 1.0 - bu[1, ...]**2, -bu[1, ...] * bu[2, ...]]) * kappax / r[None, ...])
+        dzdwt = (jnp.array([-bu[2, ...] * bu[0, ...], -bu[2, ...] * bu[1, ...], 1.0 - bu[2, ...]**2]) * kappax)
+        dupardwt = (jnp.array([xi, modp]) * (kappapar / pp.m))
+        dmudwt = (jnp.array([modp * (1 - xi**2), -modp**2 * xi]) * (jnp.sqrt((1-xi**2) / modp**2) / (pp.m * modb)) * kappaperp)
+
+        vf_diff = (drdwt.T, dvarphidwt.T, dzdwt.T, dupardwt.T, dmudwt.T)
+
+        return (vf_drift, vf_diff)
+    
+    def contr(self, t0: RealScalarLike, t1: RealScalarLike, **kwargs) -> tuple[PyTree[ArrayLike], ...]:
+        return (t1-t0, self.control.evaluate(t0, t1, **kwargs))
+
+    def prod(
+        self, vf: tuple[PyTree[ArrayLike], ...], control: tuple[PyTree[ArrayLike], ...]
+    ) -> Y:
+        vf_drift, vf_diff = vf
+        contr_drift, contr_diff = control
+        out = (
+            jtu.tree_map(lambda v: contr_drift * v, vf_drift),
+            jtu.tree_map(lambda v: _prod(v, contr_diff), vf_diff),
+        )
+        return jtu.tree_map(_sum, *out)
+    
+    def vf_prod(
+        self,
+        t: RealScalarLike,
+        y: Y,
+        args: Args,
+        control: tuple[PyTree[ArrayLike], ...],
+    ) -> Y:
+        vf = self.vf(t, y, args)
+        return self.prod(vf, control)
+
+
+# %% Legacy code
 
 # def f_driftkinetic_midplane(t, state, args: PusherArgs):
 #     """

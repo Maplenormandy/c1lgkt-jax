@@ -17,7 +17,7 @@ from matplotlib.axes import Axes
 from typing import Type, TypeVar, NamedTuple
 from jaxtyping import ArrayLike, Real, Array
 
-from .custom_types import ScalarArray, ScalarArrayLike, VectorArray
+from ..custom_types import ScalarArray, ScalarArrayLike, VectorArray
 
 import re
 
