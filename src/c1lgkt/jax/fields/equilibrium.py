@@ -339,6 +339,8 @@ class Equilibrium(eqx.Module):
             
             # First, read in ff
             line, ff = read_array(line, Npsi)
+            # NOTE: Sign convention for ff is different in g-file vs eqd-file; need to flip it
+            ff = -ff
             # Next, read pressure
             line, fluxPres = read_array(line, Npsi)
             # Read ffprim

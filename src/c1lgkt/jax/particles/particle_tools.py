@@ -12,7 +12,7 @@ from typing import NamedTuple
 
 from functools import reduce
 
-from .particle_motion import PusherArgs
+from .particle_motion import PusherArgs, PusherState
 
 from ..custom_types import ScalarArray, ScalarArrayLike
 
@@ -27,6 +27,17 @@ class PunctureData(NamedTuple):
     """
     tp: Real[ArrayLike, "Npunc"]
     yp: PyTree[Real[ArrayLike, "Npunc"]]
+
+    @classmethod
+    def empty_list_like(cls, state: PusherState) -> list[PunctureData]:
+        """
+        Creates a list of empty PunctureData objects with the same structure as the given state.
+        """
+        return list(cls(
+            tp = np.zeros((0,)),
+            yp = jax.tree.map(lambda x: np.zeros((0,)), state)
+        ) for _ in range(state.r.shape[0]))
+
 
 def compute_punctures(ts: Real[ArrayLike, "Nt"], ys: PyTree[Real[ArrayLike, "Nt *shape"]], fpunc: Real[ArrayLike, "Nt N"], condpunc: Bool[ArrayLike, "Nt"] | None = None, period: float =-1):
     """
@@ -132,12 +143,12 @@ def compute_punctures(ts: Real[ArrayLike, "Nt"], ys: PyTree[Real[ArrayLike, "Nt 
     return ppuncs, npuncs
 
 @jax.jit
-def compute_integrals(t: Real, state: PyTree[ScalarArray], args: PusherArgs) -> tuple[ScalarArray, ScalarArray]:
+def compute_integrals(t: Real, y: PusherState, args: PusherArgs) -> tuple[ScalarArray, ScalarArray]:
     """
     From the time, state, and PusherArgs, compute the Hamiltonian and the canonical toroidal angular momentum.
     """
     # Unpack the arguments
-    r, varphi, z, upar, mu = state
+    r, varphi, z, upar, mu = y
     eq = args.eq
     pp = args.pp
     fields = args.fields
@@ -159,7 +170,7 @@ def compute_integrals(t: Real, state: PyTree[ScalarArray], args: PusherArgs) -> 
 
     return ham, lphi
 
-def compute_parallel_energy(t: Real, state: PyTree[ScalarArray], integrals: tuple[Real, Real], omega: Real, args: PusherArgs) -> tuple[ScalarArray, ScalarArray]:
+def compute_parallel_energy(t: Real, y: PusherState, integrals: tuple[Real, Real], omega: Real, args: PusherArgs) -> tuple[ScalarArray, ScalarArray]:
     """
     From the time, state, integrals, and PusherArgs, compute the parallel energy.
     Note that the upar term in the state is ignored; the parallel energy is the
@@ -170,7 +181,7 @@ def compute_parallel_energy(t: Real, state: PyTree[ScalarArray], integrals: tupl
     """
 
     # Unpack the arguments
-    r, varphi, z, upar, mu = state
+    r, varphi, z, upar, mu = y
     eq = args.eq
     pp = args.pp
     fields = args.fields

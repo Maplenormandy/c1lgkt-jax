@@ -154,7 +154,7 @@ class ZonalFieldProvider(AbstractFieldProvider):
             r_dense = interp_router(psi_dense)
 
             # Integrate the electric field to get the potential
-            phi = jnp.concatenate((jnp.array([0]), jnp.cumsum((er_dense[:-1] + er_dense[1:]) * (jnp.diff(r_dense)) * 0.5)))
+            phi = -jnp.concatenate((jnp.array([0]), jnp.cumsum((er_dense[:-1] + er_dense[1:]) * (jnp.diff(r_dense)) * 0.5)))
 
             # Set up interpolators
             interp_phi = interpax.Interpolator1D(psi_dense, phi - phi[-1], method='cubic2')

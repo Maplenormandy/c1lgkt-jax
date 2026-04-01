@@ -22,6 +22,8 @@ from functools import reduce
 
 from diffrax import AbstractTerm
 
+from ..custom_types import ScalarArray
+
 # %% Arguments for the various pushers
 
 class ParticleParams(NamedTuple):
@@ -63,18 +65,39 @@ class PusherArgs(NamedTuple):
     pp: ParticleParams
     fields: list[AbstractFieldProvider]
 
+class PusherState(NamedTuple):
+    """
+    NamedTuple holding the state of a particle pusher
+    """
+    r: ScalarArray
+    varphi: ScalarArray
+    z: ScalarArray
+    upar: ScalarArray
+    mu: ScalarArray
 
+    @classmethod
+    def empty(cls, nq: int) -> PusherState:
+        """
+        Return an empty PusherState, of the appropriate shape for nq particles.
+        """
+        return cls(
+            r=jnp.empty(nq),
+            varphi=jnp.empty(nq),
+            z=jnp.empty(nq),
+            upar=jnp.empty(nq),
+            mu=jnp.empty(nq)
+        )
 
 # %% Functions for gyrokinetic particle pushing with zonally symmetric equilibria
 
 @jax.jit
-def f_driftkinetic(t, state, args: PusherArgs):
+def f_driftkinetic(t: Real, y: PusherState, args: PusherArgs):
     """
     Push a (single) drift-kinetic tracer in (R, varphi, Z) coordinates.
     Note y = (R, varphi, Z, u_||, mu). (TODO: Is this the best set of coordinates for EM?)
     """
     # Unpack the state
-    r, varphi, z, upar, mu = state
+    r, varphi, z, upar, mu = y
 
     # Unpack the arguments
     eq = args.eq
@@ -120,7 +143,7 @@ def f_driftkinetic(t, state, args: PusherArgs):
     dupardt = -(jnp.sum(bstar*gradh, axis=0) / bstarpar) / pp.m
     dmudt = jnp.zeros_like(mu)
 
-    return (drdt, dvarphidt, dzdt, dupardt, dmudt)
+    return PusherState(drdt, dvarphidt, dzdt, dupardt, dmudt)
 
 
 
