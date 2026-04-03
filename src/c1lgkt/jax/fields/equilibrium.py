@@ -380,6 +380,16 @@ class Equilibrium(eqx.Module):
         eq_kwargs = {key: local_vars[key] for key in eqd_vars}
         return cls(**eq_kwargs)
             
-
+    @classmethod
+    def build_from_config(cls, obj: dict) -> Equilibrium:
+        """
+        Builds an equilibrium from a config dictionary.
+        """
+        if 'gfile' in obj:
+            return cls.from_gfile(obj['gfile'])
+        elif 'eqdfile' in obj:
+            return cls.from_eqdfile(obj['eqdfile'])
+        else:
+            raise ValueError('Equilibrium configuration must contain either gfile or eqdfile')
 
 # %%

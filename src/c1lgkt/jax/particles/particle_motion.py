@@ -26,6 +26,11 @@ from ..custom_types import ScalarArray
 
 # %% Arguments for the various pushers
 
+# Reference mass in kg
+m_kev = 1.60217663e-22
+# 1 amu in reference mass units
+amu = 1.03642697e-5
+
 class ParticleParams(NamedTuple):
     """
     NamedTuple holding particle properties.
@@ -50,9 +55,31 @@ class ParticleParams(NamedTuple):
     m: Real
     vt: Real
 
-# Some default particle parameters
-deut = ParticleParams(z=1, m=2.08793698e-5, vt=1/jnp.sqrt(2.08793698e-5))
-elec = ParticleParams(z=-1, m=5.6856301e-9, vt=1/jnp.sqrt(5.6856301e-9))
+    @classmethod
+    def build_from_config(cls, obj: dict) -> ParticleParams:
+        """
+        Builds ParticleParams from a dictionary
+        """
+        if 'name' in obj:
+            return cls.species(obj['name'])
+        elif 'm' in obj and 'z' in obj:
+            m = obj['m'] * amu
+            z = obj['z']
+            vt = 1 / jnp.sqrt(m * amu)
+            return cls(z=z, m=m, vt=vt)
+        else:
+            # TODO: Method for specifying custom particle parameters?
+            raise ValueError('Invalid particle species configuration')
+
+    @classmethod
+    def species(cls, name: str):
+        match name:
+            case 'e':
+                return cls(z=-1, m=5.6856301e-9, vt=1/jnp.sqrt(5.6856301e-9))
+            case 'D':
+                return cls(z=1, m=2.08793698e-5, vt=1/jnp.sqrt(2.08793698e-5))
+            case _:
+                raise ValueError(f'Unknown species {name}')
 
 # %% Definition of gyrokinetic Hamiltonian
 

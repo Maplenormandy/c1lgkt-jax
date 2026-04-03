@@ -45,7 +45,7 @@ with open('./scratch/outputs/puncs.pkl', 'rb') as f:
 
 omega_frame = 2*jnp.pi*20.0 / 7
 
-pp = particle_motion.elec
+pp = particle_motion.ParticleParams.species('e')
 
 def process_puncture(punc: particle_tools.PunctureData):
     """

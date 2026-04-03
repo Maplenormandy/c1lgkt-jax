@@ -166,7 +166,7 @@ def compute_integrals(t: Real, y: PusherState, args: PusherArgs) -> tuple[Scalar
     # Compute the integrals
     ppar = pp.m * upar - pp.z * apar
     ham = 0.5 * ppar**2 / pp.m + mu * modb + pp.z * phi
-    lphi = pp.z * psi_ev[0] + ppar * r * bv[1,:] / modb
+    lphi = pp.z * psi_ev[0] + ppar * r * bv[1,...] / modb
 
     return ham, lphi
 

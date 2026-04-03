@@ -1,0 +1,49 @@
+--- # Particle pusher configuration
+  equilibrium:
+    gfile: "./scratch/data/g193802.04490"
+  
+  species:
+    name: "e"
+
+  fields:
+  - type: "zonal"
+    pfile: "./scratch/data/p193802.04490"
+
+--- # Initial conditions
+  inputs:
+  - op: "meshgrid"
+
+  - transform: "integrals"
+    input:
+    - constant: "{{0.95*eq.psix}}"
+      axes: "psi"
+
+    - constant: "{{sqrt(0.33)}}"
+      axes: "xi"
+
+    - constant: "{{2*pi*27.0/6}}"
+      axes: "omega_frame"
+
+    - sampler: "linspace"
+      axes: "ev"
+      kwargs:
+        start: 0.05
+        stop: 0.35
+        num: 4
+
+  - transform: "outboard_midplane"
+    input:
+    - sampler: "linspace"
+      axes: "psi"
+      kwargs:
+        start: "{{0.92*eq.psix}}"
+        stop: "{{0.97*eq.psix}}"
+        num: 32
+
+  - constant: 0.0
+    axes: "varphi"
+
+
+...
+
+  

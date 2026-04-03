@@ -21,6 +21,7 @@ from jaxtyping import ArrayLike, Real, Array
 from .equilibrium import Equilibrium
 
 import re
+import os
 
 from functools import partial
 
@@ -94,7 +95,7 @@ class UvParams(NamedTuple):
         )
 
 @jax.jit
-def _compute_uv(r: Real, z: Real, nulls: MagneticNullInfo, params: UvParams) -> tuple[Real, Real]:
+def _scalar_compute_uv(r: Real, z: Real, nulls: MagneticNullInfo, params: UvParams) -> tuple[Real, Real]:
     """
     Computes the auxiliary (u,v) fields used to compute theta = arctan2(v,u). The strategy is to place zeros of a
     complex(-ish) function f(z) = (z-z0) (z-z1) (z-z2), then compute u = Re(f(z)) and v = Im(f(z)).
@@ -131,23 +132,27 @@ def _compute_uv(r: Real, z: Real, nulls: MagneticNullInfo, params: UvParams) -> 
 
     return jnp.real(uv), jnp.imag(uv)
 
-
 @jax.jit
-def _grad_theta(r: Real, z: Real, nulls: MagneticNullInfo, params: UvParams) -> tuple[Real, Real]:
+def _scalar_grad_theta(r: Real, z: Real, nulls: MagneticNullInfo, params: UvParams) -> tuple[Real, Real]:
     """
     Computes the smoothly-varying gradient of theta = arctan2(v,u) (i.e. across the branch cut) with respect to (r,z)
     using the auxiliary (u,v) fields.
 
     This is the internal, unbatched function with parameters that specify the locations of the fictional o-points.
     """
-    (u, v), vjp_fun = jax.vjp(lambda r_in, z_in: _compute_uv(r_in, z_in, nulls, params), r, z)
+    (u, v), vjp_fun = jax.vjp(lambda r_in, z_in: _scalar_compute_uv(r_in, z_in, nulls, params), r, z)
     uv2 = u**2 + v**2
 
     return vjp_fun((-v / uv2, u / uv2))
 
 # Hessian of theta
-_hess_theta = jax.jacfwd(_grad_theta, argnums=(0, 1))
+_scalar_hess_theta = jax.jacfwd(_scalar_grad_theta, argnums=(0, 1))
 
+
+## Vectorized functions
+_compute_uv = jnp.vectorize(_scalar_compute_uv, excluded=(2,3))
+_grad_theta = jnp.vectorize(_scalar_grad_theta, excluded=(2,3))
+_hess_theta = jnp.vectorize(_scalar_hess_theta, excluded=(2,3))
 
 ## These functions help compute the parameters needed for the (u,v) field
 
@@ -164,8 +169,8 @@ def _objective_uv_params(y: Real[Array, "4"], args: MagneticNullInfo) -> Real[Ar
     uv_params = UvParams.from_array(y_aug)
 
     # Compute grad(theta) at the x-points
-    dth1 = jnp.array(_grad_theta(nulls.x1.rz[0], nulls.x1.rz[1], nulls, uv_params))
-    dth2 = jnp.array(_grad_theta(nulls.x2.rz[0], nulls.x2.rz[1], nulls, uv_params))
+    dth1 = jnp.array(_scalar_grad_theta(nulls.x1.rz[0], nulls.x1.rz[1], nulls, uv_params))
+    dth2 = jnp.array(_scalar_grad_theta(nulls.x2.rz[0], nulls.x2.rz[1], nulls, uv_params))
 
     # Return grad(theta) components at both x-points
     return jnp.array([dth1[0], dth1[1], dth2[0], dth2[1]])
@@ -181,12 +186,12 @@ def _objective_uv_params_refine(y: Real[Array, "8"], args: MagneticNullInfo) -> 
     uv_params = UvParams.from_array(y)
 
     # Compute grad(theta) at the x-points
-    dth1 = jnp.array(_grad_theta(nulls.x1.rz[0], nulls.x1.rz[1], nulls, uv_params))
-    dth2 = jnp.array(_grad_theta(nulls.x2.rz[0], nulls.x2.rz[1], nulls, uv_params))
+    dth1 = jnp.array(_scalar_grad_theta(nulls.x1.rz[0], nulls.x1.rz[1], nulls, uv_params))
+    dth2 = jnp.array(_scalar_grad_theta(nulls.x2.rz[0], nulls.x2.rz[1], nulls, uv_params))
 
     # Compute Hessian of theta at the x-points
-    hth1 = jnp.array(_hess_theta(nulls.x1.rz[0], nulls.x1.rz[1], nulls, uv_params))
-    hth2 = jnp.array(_hess_theta(nulls.x2.rz[0], nulls.x2.rz[1], nulls, uv_params))
+    hth1 = jnp.array(_scalar_hess_theta(nulls.x1.rz[0], nulls.x1.rz[1], nulls, uv_params))
+    hth2 = jnp.array(_scalar_hess_theta(nulls.x2.rz[0], nulls.x2.rz[1], nulls, uv_params))
 
     # Compute the inertia at the x-points, which we want to take the form [[0, a], [a, 0]]
     inertia1 = nulls.x1.sinv @ hth1 @ nulls.x1.sinv.T
@@ -225,7 +230,7 @@ def fn_fieldline(t, y, args: ClebschFieldlineArgs):
 
     br, bt, bz = eq.compute_bv(r, z)
 
-    gradtheta = _grad_theta(r, z, nulls, uv_params)
+    gradtheta = _scalar_grad_theta(r, z, nulls, uv_params)
     psidr = eq.interp_psi(r, z, dx=1)
     psidz = eq.interp_psi(r, z, dy=1)
 
@@ -270,7 +275,7 @@ class ThetaMapping(eqx.Module):
         """
         r = jnp.asarray(r)
         z = jnp.asarray(z)
-        return jax.vmap(_compute_uv, in_axes=(0,0,None,None))(r, z, self.nulls, self.uv_params)
+        return _compute_uv(r, z, self.nulls, self.uv_params)
     
     def __call__(self, r: ScalarArrayLike, z: ScalarArrayLike) ->  ScalarArray:
         """
@@ -288,7 +293,7 @@ class ThetaMapping(eqx.Module):
         """
         r = jnp.asarray(r)
         z = jnp.asarray(z)
-        return jax.vmap(_grad_theta, in_axes=(0,0,None,None))(r, z, self.nulls, self.uv_params)
+        return _grad_theta(r, z, self.nulls, self.uv_params)
 
     def hessian(self, r: ScalarArrayLike, z: ScalarArrayLike) -> tuple[tuple[ScalarArray, ScalarArray], tuple[ScalarArray, ScalarArray]]:
         """
@@ -296,7 +301,7 @@ class ThetaMapping(eqx.Module):
         """
         r = jnp.asarray(r)
         z = jnp.asarray(z)
-        return jax.vmap(_hess_theta, in_axes=(0,0,None,None))(r, z, self.nulls, self.uv_params)
+        return _hess_theta(r, z, self.nulls, self.uv_params)
         
 # %% Class for Clebsch field?
 
@@ -428,7 +433,7 @@ class ClebschMappingBuilder(eqx.Module):
         # Initial Z is at the magnetic axis plane
         z0 = jnp.full_like(r0, nulls.axis.rz[1])
         # We don't necessarily start at theta = 0, so compute initial theta from (u,v)
-        u0, v0 = _compute_uv(r0, z0, nulls, uv_params)
+        u0, v0 = _scalar_compute_uv(r0, z0, nulls, uv_params)
         theta0 = jnp.arctan2(v0, u0)
 
         # Initial state (r, z, alpha=0)
@@ -508,27 +513,6 @@ class ClebschMappingBuilder(eqx.Module):
         )
 
         return theta_map
-    
-    def load_theta_map(self, eqx_filename: str) -> ThetaMapping:
-        """
-        Loads a theta mapping from a given eqx file
-        """
-        # Open up the file
-        with open(eqx_filename, 'rb') as f:
-            # Create an empty theta map to use as a template
-            nulls_empty = MagneticNullInfo(
-                axis=self._init_empty_magnetic_null(),
-                x1=self._init_empty_magnetic_null(),
-                x2=self._init_empty_magnetic_null(),
-                amid=0.0)
-            theta_map_empty = ThetaMapping(
-                nulls=nulls_empty,
-                uv_params=UvParams.from_array(jnp.zeros((8,))),
-            )
-            # Deserialize the theta map
-            theta_map = eqx.tree_deserialise_leaves(f, theta_map_empty)
-
-        return theta_map
 
     def build_clebsch(self, theta_map: ThetaMapping, eq: Equilibrium) -> ClebschMapping:
         """
@@ -552,13 +536,22 @@ class ClebschMappingBuilder(eqx.Module):
 
         return clebsch
     
-    def load_clebsch(self, eqx_filename: str) -> ClebschMapping:
+    def build_from_config(self, config: dict, eq: Equilibrium) -> tuple[ThetaMapping, ClebschMapping]:
         """
-        Loads a Clebsch mapping from a given eqx file
+        Tries to load both the theta mapping and the clebsch mapping from the given eqx files. If either file is not found, we instead build the corresponding mapping from the given equilibrium. This allows us to avoid recomputing the theta mapping if we already have it saved, which is useful for experimentation with different alpha computations.
         """
-        # Open up the file
-        with open(eqx_filename, 'rb') as f:
-            # Create an empty clebsch mapping to use as a template
+        if 'cachefile' in config and os.path.isfile(config['cachefile']):
+            # If the cache file exists, load both the theta mapping and the clebsch mapping from it
+            nulls_empty = MagneticNullInfo(
+                axis=self._init_empty_magnetic_null(),
+                x1=self._init_empty_magnetic_null(),
+                x2=self._init_empty_magnetic_null(),
+                amid=0.0)
+            theta_map_empty = ThetaMapping(
+                nulls=nulls_empty,
+                uv_params=UvParams.from_array(jnp.zeros((8,))),
+            )
+
             psi_eval = jnp.linspace(0.0, 1.0, 512)  # Placeholder; actual values will be loaded
             theta_eval = jnp.linspace(-4*jnp.pi, 4*jnp.pi, 1024, endpoint=False)
             alpha_eval = jnp.zeros((512, 1024))  # Placeholder; actual values will be loaded
@@ -566,10 +559,19 @@ class ClebschMappingBuilder(eqx.Module):
             clebsch_empty = ClebschMapping(
                 interp_alpha=interp_alpha_empty
             )
-            # Deserialize the clebsch mapping
-            clebsch = eqx.tree_deserialise_leaves(f, clebsch_empty)
 
-        return clebsch
+            print('Loaded theta and clebsch mapping from file')
+
+            theta_map, clebsch = eqx.tree_deserialise_leaves(config['cachefile'], (theta_map_empty, clebsch_empty))
+        else:
+            # If we've failed to load from the cache file, we try to build the theta mapping
+            theta_map = self.build_theta_map(eq)
+            clebsch = self.build_clebsch(theta_map, eq)
+
+            if 'cachefile' in config:
+                eqx.tree_serialise_leaves(config['cachefile'], (theta_map, clebsch))
+        
+        return theta_map, clebsch
 
     def __init__(self):
         """

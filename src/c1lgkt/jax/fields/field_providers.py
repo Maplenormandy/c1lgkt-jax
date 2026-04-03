@@ -22,16 +22,20 @@ from jaxtyping import ArrayLike, Real, Complex, Integer, Array
 
 import abc
 
-from .clebsch import ClebschMapping, ThetaMapping
+from .clebsch import ClebschMapping, ThetaMapping, ClebschMappingBuilder
 from .equilibrium import Equilibrium, PsiTuple
 
 from ..custom_types import ScalarArray, ScalarArrayLike, VectorTuple
+
+from functools import partial
 
 # %% Allowable field signatures
 
 type EmFieldTuple = tuple[ScalarArray, ScalarArray]
 type GradEmFieldTuple = tuple[VectorTuple, VectorTuple]
 
+
+type_registry: dict[str, Type['AbstractFieldProvider']] = {}
 
 class AbstractFieldProvider(eqx.Module):
     @abc.abstractmethod
@@ -56,10 +60,44 @@ class AbstractFieldProvider(eqx.Module):
         Computes the values and gradients of the fields with respect to (R, varphi, Z).
         """
         raise NotImplementedError
+    
+    @classmethod
+    @abc.abstractmethod
+    def _build_from_config(cls, config: dict, eq: Equilibrium) -> AbstractFieldProvider:
+        """
+        Builds a field provider from a configuration dictionary. The exact format of the dictionary
+        will depend on the specific field provider, but it should contain all necessary information
+        to construct the field provider.
+        """
+        raise NotImplementedError
+    
+    @staticmethod
+    def build_from_config(config: dict, eq: Equilibrium) -> AbstractFieldProvider:
+        """
+        This method dispatches to the appropriate _build_from_config method based on the 'type' field
+        in the configuration dictionary. The 'type' field should specify the type of field provider to construct (e.g. 'eikonal', 'zonal', etc.).
+        """
+        if 'type' not in config:
+            raise ValueError('Field provider configuration must contain type')
+        
+        type_name = config.pop('type')
+        if type_name not in type_registry:
+            raise ValueError(f'Unknown field provider type {type_name}')
+        
+        cls = type_registry[type_name]
+        return cls._build_from_config(config, eq)
+
+
+
+
+def register_field_provider(cls, type_name: str):
+    type_registry[type_name] = cls
+    return cls
 
 
 # %% Some field providers
 
+@partial(register_field_provider, type_name='zonal')
 class ZonalFieldProvider(AbstractFieldProvider):
     """
     Field provider for (time-indepenent) zonally symmetric fields. Might do time-dependent later
@@ -161,10 +199,21 @@ class ZonalFieldProvider(AbstractFieldProvider):
             interp_apar = interpax.Interpolator1D(psi_dense, jnp.zeros_like(psi_dense), method='cubic2')
 
             return cls(interp_phi, interp_apar)
+        
+    @classmethod
+    def _build_from_config(cls, config: dict, eq: Equilibrium) -> ZonalFieldProvider:
+        """
+        Builds a zonal field provider from a configuration dictionary. The dictionary should contain the filename of the pfile to load the fields from, as well as an equilibrium object to get the necessary normalization factors.
+        """
+        if 'pfile' in config:
+            return cls.from_pfile(config['pfile'], eq)
+        else:
+            raise ValueError('Zonal field provider configuration must contain pfile')
 
 def sum_fourier(coefs: Complex[Array, "Nq Nmode"], phases: Real[Array, "Nq Nmode"]) -> Real[Array, "Nq"]:
     return jnp.sum(jnp.real(coefs) * jnp.cos(phases) - jnp.imag(coefs) * jnp.sin(phases), axis=-1)
 
+@partial(register_field_provider, type_name='rzfourier')
 class RZFourierFieldProvider(AbstractFieldProvider):
     """
     Field provider for fields which are real in (R,Z) and (sparse) Fourier in varphi. Phase = omega t - n varphi
@@ -248,7 +297,15 @@ class RZFourierFieldProvider(AbstractFieldProvider):
         r, varphi, z = jnp.asarray(r), jnp.asarray(varphi), jnp.asarray(z)
 
         return self._value_and_grad(t, r, varphi, z, psi_ev)
+    
+    @classmethod
+    def _build_from_config(cls, config: dict, eq: Equilibrium) -> RZFourierFieldProvider:
+        """
+        Builds an RZFourierFieldProvider from a configuration dictionary. The dictionary should contain the necessary information to construct the interpolators for the Fourier coefficients, as well as the mode numbers and frequencies.
+        """
+        raise NotImplementedError('RZFourierFieldProvider does not yet have a build_from_config method implemented')
 
+@partial(register_field_provider, type_name='eikonal')
 class EikonalFieldProvider(AbstractFieldProvider):
     """
     Field provider for fields with eikonal structure:
@@ -291,7 +348,7 @@ class EikonalFieldProvider(AbstractFieldProvider):
         """
         self.theta_map = theta_map
         self.clebsch = clebsch
-        self.n = jnp.asarray(n)
+        self.n = jnp.asarray(n, dtype=int)
         self.omega = jnp.asarray(omega)
         self.psi0 = jnp.asarray(psi0)
         self.psi_scale = jnp.asarray(psi_scale)
@@ -300,11 +357,11 @@ class EikonalFieldProvider(AbstractFieldProvider):
         self.gh_coefs = jnp.asarray(gh_coefs)
 
         # Build interpolator for alpha0(psi)
-        alpha0 = jax.lax.map(lambda t: clebsch.interp_alpha(clebsch.interp_alpha.x, jnp.full_like(clebsch.interp_alpha.x, t)), theta0).transpose()
+        alpha0 = jax.lax.map(lambda t: clebsch.interp_alpha(clebsch.interp_alpha.x, jnp.full_like(clebsch.interp_alpha.x, t)), jnp.asarray(theta0)).transpose()
         self.interp_alpha0 = interpax.Interpolator1D(clebsch.interp_alpha.x, alpha0, kind='cubic2', extrap=True)
 
     @jax.jit
-    def _eval(self, t: Real,
+    def _scalar_eval(self, t: Real,
         psi: Real, theta: Real, varphi: Real
         ) -> tuple[Real, Real]:
         """
@@ -352,8 +409,10 @@ class EikonalFieldProvider(AbstractFieldProvider):
         apar = jnp.sum(p[:, :, 2] * jnp.cos(phase) - p[:, :, 3] * jnp.sin(phase), axis=(0,1))
 
         return phi, apar
+    
+    _eval = jnp.vectorize(_scalar_eval, excluded=(0,1))
 
-    _grad_eval = jax.vmap(jax.jacrev(_eval, argnums=(2,3,4)), in_axes=(None, None, 0, 0, 0))
+    _grad_eval = jnp.vectorize(jax.jacrev(_scalar_eval, argnums=(2,3,4)), excluded=(0,1))
 
     def __call__(self,
         t: Real,
@@ -368,7 +427,7 @@ class EikonalFieldProvider(AbstractFieldProvider):
         # Compute theta
         theta = self.theta_map(r,z)
 
-        return jax.vmap(self._eval, in_axes=(None, 0, 0, 0))(t, psi, theta, varphi)
+        return self._eval(t, psi, theta, varphi)
 
     def value_and_grad(self,
         t: Real,
@@ -385,7 +444,7 @@ class EikonalFieldProvider(AbstractFieldProvider):
         thetadr, thetadz = self.theta_map.grad(r,z)
 
         # Get fields
-        phi, apar = jax.vmap(self._eval, in_axes=(None, 0, 0, 0))(t, psi, theta, varphi)
+        phi, apar = self._eval(t, psi, theta, varphi)
 
         # Compute the jacobian of the fields
         (dphi_dpsi, dphi_dtheta, dphi_dvarphi), (dapar_dpsi, dapar_dtheta, dapar_dvarphi) = self._grad_eval(t, psi, theta, varphi)
@@ -398,4 +457,25 @@ class EikonalFieldProvider(AbstractFieldProvider):
                 (dapar_dpsi * psidr + dapar_dtheta * thetadr, dapar_dvarphi, dapar_dpsi * psidz + dapar_dtheta * thetadz)
             )
         )
+    
+    @classmethod
+    def _build_from_config(cls, config: dict, eq: Equilibrium) -> EikonalFieldProvider:
+        clebsch_builder = ClebschMappingBuilder()
+        clebsch_config = config.pop('clebsch')
+        
+        theta_map, clebsch = clebsch_builder.build_from_config(clebsch_config, eq)
+
+        # Special treatment for gh_coefs
+        n_mode = len(np.asarray(config['n']))
+
+        gh_coefs_config = np.asarray(config.pop('gh_coefs'))
+        gh_coefs = np.zeros(n_mode * 4 * 6)
+        gh_coefs[:len(gh_coefs_config)] = gh_coefs_config
+        config['gh_coefs'] = gh_coefs.reshape((n_mode, 4, 6))
+
+        return cls(theta_map, clebsch, **config)
+
+
+
+    
 # %%
