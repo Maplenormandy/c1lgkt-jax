@@ -32,17 +32,9 @@ import c1lgkt.jax.particles.particle_tools as particle_tools
 # %% Load configuration
 
 args, ic_gen = load_yaml_config('./scratch/data/nt_analysis.yaml')
-ic = realize_initial_conditions(ic_gen, args)
+y0, mask, ic = realize_initial_conditions(ic_gen, args)
 
 eq = args.eq
-
-y0 = particle_motion.PusherState(
-    r=ic['R'],
-    varphi=ic['varphi'],
-    z=ic['Z'],
-    upar=ic['upar'],
-    mu=ic['mu']
-)
 
 t0 = 0.0
 
@@ -59,7 +51,7 @@ dy0 = particle_motion.f_driftkinetic(t0, y0, args)
 
 import pickle
 
-num_blocks = 64
+num_blocks = 512
 #num_blocks = 64
 save_interval = 64
 ppuncs = particle_tools.PunctureData.empty_list_like(y0)

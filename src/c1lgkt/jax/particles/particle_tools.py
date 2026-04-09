@@ -16,6 +16,8 @@ from .particle_motion import PusherArgs, PusherState
 
 from ..custom_types import ScalarArray, ScalarArrayLike
 
+from ..fields.field_providers import sum_fields
+
 class PunctureData(NamedTuple):
     """
     NamedTuple holding puncture data.
@@ -151,17 +153,15 @@ def compute_integrals(t: Real, y: PusherState, args: PusherArgs) -> tuple[Scalar
     r, varphi, z, upar, mu = y
     eq = args.eq
     pp = args.pp
-    fields = args.fields
 
     psi_ev, ff_ev = eq.compute_psi_and_ff(r, z)
     bv = eq.compute_bv(r, z)
     modb = jnp.linalg.norm(bv, axis=0)
 
     # Compute the fields
-    fields_eval = [f(t, r, varphi, z, psi_ev) for f in fields]
-    # Sum up the values
-    fields_eval_sum = reduce(lambda a, b: jax.tree.map(lambda x, y: x + y, a, b), fields_eval)
-    phi, apar = fields_eval_sum
+    fields = args.compute_fields(t, r, varphi, z, psi_ev)
+    phi = fields.get('phi', 0.0)
+    apar = fields.get('apar', 0.0)
 
     # Compute the integrals
     ppar = pp.m * upar - pp.z * apar
@@ -184,7 +184,6 @@ def compute_parallel_energy(t: Real, y: PusherState, integrals: tuple[Real, Real
     r, varphi, z, upar, mu = y
     eq = args.eq
     pp = args.pp
-    fields = args.fields
     ham, lphi = integrals
 
     # Compute the adiabatic invariant
@@ -196,10 +195,9 @@ def compute_parallel_energy(t: Real, y: PusherState, integrals: tuple[Real, Real
     modb = jnp.linalg.norm(bv, axis=0)
 
     # Compute the fields
-    fields_eval = [f(t, r, varphi, z, psi_ev) for f in fields]
-    # Sum up the values
-    fields_eval_sum = reduce(lambda a, b: jax.tree.map(lambda x, y: x + y, a, b), fields_eval)
-    phi, apar = fields_eval_sum
+    fields = args.compute_fields(t, r, varphi, z, psi_ev)
+    phi = fields.get('phi', 0.0)
+    apar = fields.get('apar', 0.0)
 
     # Compute the parallel energy
     ppar0 = pp.m * omega * r * bv[1,:] / modb

@@ -6,15 +6,15 @@ Typically everything is done in cylindrical coordinates (R, phi, Z).
 
 from typing import NamedTuple, TypeVar, Generic
 
-from ..fields.equilibrium import Equilibrium
+from ..fields.equilibrium import Equilibrium, PsiTuple
 from ..fields.clebsch import ThetaMapping
-from ..fields.field_providers import AbstractFieldProvider
+from ..fields.field_providers import AbstractFieldProvider, sum_field_grads, sum_fields
 import jax.numpy as jnp
 import jax
 import interpax
 import jax.tree_util as jtu
 
-from jaxtyping import ArrayLike, Real, PyTree
+from jaxtyping import ArrayLike, Real, PyTree, Array
 from diffrax._custom_types import RealScalarLike, VF, Y, Args, Control
 from diffrax._path import AbstractPath
 
@@ -22,7 +22,7 @@ from functools import reduce
 
 from diffrax import AbstractTerm
 
-from ..custom_types import ScalarArray
+from ..custom_types import ScalarArray, ScalarArrayLike, ScalarFields, VectorFields
 
 # %% Arguments for the various pushers
 
@@ -92,6 +92,20 @@ class PusherArgs(NamedTuple):
     pp: ParticleParams
     fields: list[AbstractFieldProvider]
 
+    def compute_fields(self, t: Real, r: ScalarArrayLike, varphi: ScalarArrayLike, z: ScalarArrayLike, psi_ev: PsiTuple) -> ScalarFields:
+        """
+        Compute the fields at the given position and time.
+        """
+        fields = reduce(sum_fields, (f(t, r, varphi, z, psi_ev) for f in self.fields))
+        return fields
+    
+    def compute_grad_fields(self, t: Real, r: ScalarArrayLike, varphi: ScalarArrayLike, z: ScalarArrayLike, psi_ev: PsiTuple) -> tuple[VectorFields, ScalarFields]:
+        """
+        Compute the field gradients at the given position and time.
+        """
+        grad_fields, fields = reduce(sum_field_grads, (f.grad_and_value(t, r, varphi, z, psi_ev) for f in self.fields))
+        return grad_fields, fields
+
 class PusherState(NamedTuple):
     """
     NamedTuple holding the state of a particle pusher
@@ -130,7 +144,6 @@ def f_driftkinetic(t: Real, y: PusherState, args: PusherArgs):
     eq = args.eq
     pp = args.pp
     #theta_map = args.theta_map
-    fields = args.fields
     
     ## Magnetic terms
     psi_ev, ff_ev = eq.compute_psi_and_ff(r, z)
@@ -142,12 +155,11 @@ def f_driftkinetic(t: Real, y: PusherState, args: PusherArgs):
     ## Compute the fields
 
     # Evaluate the fields and their gradients over the list of field providers
-    fields_eval = [f.value_and_grad(t, r, varphi, z, psi_ev) for f in fields]
-    # Sum up the values and gradients
-    fields_eval_sum = reduce(lambda a, b: jax.tree.map(lambda x, y: x + y, a, b), fields_eval)
+    grad_fields, fields = args.compute_grad_fields(t, r, varphi, z, psi_ev)
     # Unpack
-    phi, apar = fields_eval_sum[0]
-    (dphi_dr, dphi_dvarphi, dphi_dz), (dapar_dr, dapar_dvarphi, dapar_dz) = fields_eval_sum[1]
+    apar = fields.get('apar', jnp.zeros_like(r))
+    (dapar_dr, dapar_dvarphi, dapar_dz) = grad_fields.get('apar', (jnp.zeros_like(r), jnp.zeros_like(r), jnp.zeros_like(r)))
+    (dphi_dr, dphi_dvarphi, dphi_dz) = grad_fields.get('phi', (jnp.zeros_like(r), jnp.zeros_like(r), jnp.zeros_like(r)))
 
     ## Compute gradients of the Hamiltonian
 
@@ -187,7 +199,7 @@ def _sum(*x):
 class GyroSDETerm(AbstractTerm, Generic[_Control]):
     control: AbstractPath[_Control]
 
-    def vf(self, t: RealScalarLike, y: Y, args: PusherArgs) -> tuple[PyTree[ArrayLike], ...]:
+    def vf(self, t: RealScalarLike, y: PusherState, args: PusherArgs) -> tuple[PyTree[ArrayLike], ...]:
         # Unpack the state
         r, varphi, z, upar, mu = y
 
@@ -195,7 +207,6 @@ class GyroSDETerm(AbstractTerm, Generic[_Control]):
         eq = args.eq
         pp = args.pp
         #theta_map = args.theta_map
-        fields = args.fields
         
         ## Magnetic terms
         psi_ev, ff_ev = eq.compute_psi_and_ff(r, z)
@@ -207,12 +218,11 @@ class GyroSDETerm(AbstractTerm, Generic[_Control]):
         ## Compute the fields
 
         # Evaluate the fields and their gradients over the list of field providers
-        fields_eval = [f.value_and_grad(t, r, varphi, z, psi_ev) for f in fields]
-        # Sum up the values and gradients
-        fields_eval_sum = reduce(lambda a, b: jax.tree.map(lambda x, y: x + y, a, b), fields_eval)
+        grad_fields, fields = args.compute_grad_fields(t, r, varphi, z, psi_ev)
         # Unpack
-        phi, apar = fields_eval_sum[0]
-        (dphi_dr, dphi_dvarphi, dphi_dz), (dapar_dr, dapar_dvarphi, dapar_dz) = fields_eval_sum[1]
+        apar = fields.get('apar', 0.0)
+        (dapar_dr, dapar_dvarphi, dapar_dz) = grad_fields.get('apar', (0.0, 0.0, 0.0))
+        (dphi_dr, dphi_dvarphi, dphi_dz) = grad_fields.get('phi', (0.0, 0.0, 0.0))
 
         ## Compute gradients of the Hamiltonian
 
@@ -236,7 +246,7 @@ class GyroSDETerm(AbstractTerm, Generic[_Control]):
         dupardt = -(jnp.sum(bstar*gradh, axis=0) / bstarpar) / pp.m
         dmudt = jnp.zeros_like(mu)
 
-        vf_drift = (drdt, dvarphidt, dzdt, dupardt, dmudt)
+        vf_drift = PusherState(drdt, dvarphidt, dzdt, dupardt, dmudt)
 
         ## Diffusion part of the SDE
 
@@ -257,7 +267,7 @@ class GyroSDETerm(AbstractTerm, Generic[_Control]):
         dupardwt = (jnp.array([xi, modp]) * (kappapar / pp.m))
         dmudwt = (jnp.array([modp * (1 - xi**2), -modp**2 * xi]) * (jnp.sqrt((1-xi**2) / modp**2) / (pp.m * modb)) * kappaperp)
 
-        vf_diff = (drdwt.T, dvarphidwt.T, dzdwt.T, dupardwt.T, dmudwt.T)
+        vf_diff = PusherState(drdwt.T, dvarphidwt.T, dzdwt.T, dupardwt.T, dmudwt.T)
 
         return (vf_drift, vf_diff)
     

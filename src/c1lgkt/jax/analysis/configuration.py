@@ -3,7 +3,7 @@ This module contains code to load and set up PusherArgs
 """
 
 from typing import Any
-from ..particles.particle_motion import PusherArgs, ParticleParams
+from ..particles.particle_motion import PusherArgs, ParticleParams, PusherState
 from ..fields.equilibrium import Equilibrium
 
 from ..fields.field_providers import AbstractFieldProvider
@@ -12,6 +12,8 @@ from .initial_conditions import build_initial_conditions, InitialConditionGenera
 
 import yaml
 import jax.numpy as jnp
+
+from jaxtyping import Array, Bool
 
 # %%
 
@@ -77,7 +79,7 @@ def load_yaml_config(path: str) -> tuple[PusherArgs, InitialConditionGenerator]:
     return pusher_args, ic_generator
 
 
-def realize_initial_conditions(ic_generator: InitialConditionGenerator, args: PusherArgs) -> dict[str, Any]:
+def realize_initial_conditions(ic_generator: InitialConditionGenerator, args: PusherArgs) -> tuple[PusherState, Bool[Array, "..."], dict[str, Any]]:
     """
     Realizes the initial conditions by evaluating the generators and transforms specified in the InitialConditionGenerator.
     """
@@ -88,5 +90,21 @@ def realize_initial_conditions(ic_generator: InitialConditionGenerator, args: Pu
         'fields': args.fields,
         'args': args
     }
+
+    # Realize the initial conditions
+    ic = ic_generator.realize(context)
+
+    # Get the filter mask for the particles
+    mask = jnp.isfinite(ic['upar'])
+
+    # Set up the initial conditions as a PusherState
+    y0 = PusherState(
+        r=ic['R'][mask],
+        varphi=ic['varphi'][mask],
+        z=ic['Z'][mask],
+        upar=ic['upar'][mask],
+        mu=ic['mu'][mask]
+    )
+
         
-    return ic_generator.realize(context)
+    return y0, mask.reshape(ic['shape']), ic
