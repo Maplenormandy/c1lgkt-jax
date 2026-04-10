@@ -4,7 +4,7 @@ Contains codes for the vector fields associated with particle motion.
 Typically everything is done in cylindrical coordinates (R, phi, Z).
 """
 
-from typing import NamedTuple, TypeVar, Generic
+from typing import NamedTuple, TypeVar, Generic, Literal
 
 from ..fields.equilibrium import Equilibrium, PsiTuple
 from ..fields.clebsch import ThetaMapping
@@ -18,18 +18,28 @@ from jaxtyping import ArrayLike, Real, PyTree, Array
 from diffrax._custom_types import RealScalarLike, VF, Y, Args, Control
 from diffrax._path import AbstractPath
 
-from functools import reduce
+from functools import partial, reduce
 
 from diffrax import AbstractTerm
 
 from ..custom_types import ScalarArray, ScalarArrayLike, ScalarFields, VectorFields
 
+from jax.scipy.special import erf
+
 # %% Arguments for the various pushers
 
+# Reference charge in units of C
+q_ref = 1.60217663e-19
+# Reference energy in units of J
+e_ref = 1.60217663e-16
 # Reference mass in kg
 m_kev = 1.60217663e-22
+
 # 1 amu in reference mass units
 amu = 1.03642697e-5
+# collisional prefactor (e^4 / (4 pi epsilon0^2)) in reference units
+# => Google search calculator version: (electron charge) ^ 4 / (permittivity of free space) ^ 2 / (1.60217663e-22 kg)^2 * (1ms)^4 / ( 4 * pi)
+e0_prefactor = 2.60563432e-23
 
 class ParticleParams(NamedTuple):
     """
@@ -38,6 +48,7 @@ class ParticleParams(NamedTuple):
     Some unit normalizations:
     - Length: 1m
     - Magnetic field: 1T
+    - Electrostatic potential: 1kV
     - Energy: 1keV
     - Time: 1ms
     - Charge: e
@@ -47,7 +58,7 @@ class ParticleParams(NamedTuple):
     z: float
         Particle charge state (in units of e)
     m: float
-        Particle mass (in units of proton mass)
+        Particle mass (in reference mass units, i.e. 1.03642697e-5 for 1 amu)
     vt: float
         Reference particle velocity at 1 keV in reference units; technically a derived quantity but very useful to have around
     """
@@ -131,11 +142,21 @@ class PusherState(NamedTuple):
 
 # %% Functions for gyrokinetic particle pushing with zonally symmetric equilibria
 
-@jax.jit
-def f_driftkinetic(t: Real, y: PusherState, args: PusherArgs):
+def _inc_gamma_psi(x: Real) -> Real:
+    R"""
+    The regularized incomplete lower gamma function, which appears in collisional expressions.
+    $\psi(x) = 2 / \sqrt{\pi} \int_0^x \sqrt{t} e^{-t} dt$
     """
-    Push a (single) drift-kinetic tracer in (R, varphi, Z) coordinates.
-    Note y = (R, varphi, Z, u_||, mu). (TODO: Is this the best set of coordinates for EM?)
+    return erf(jnp.sqrt(x)) - (2 / jnp.sqrt(jnp.pi)) * jnp.sqrt(x) * jnp.exp(-x)
+
+_gv_inc_gamma_psi = jax.numpy.vectorize(jax.value_and_grad(_inc_gamma_psi))
+
+@partial(jax.jit, static_argnames=['mode'])
+def _gyro_vf(t: Real, y: PusherState, args: PusherArgs, *, mode: Literal["ode", "sde"] = 'ode') -> PusherState | tuple[PusherState, PusherState]:
+    """
+    Push gyrokinetic tracers in (R, varphi, Z, upar, mu) coordinates. If mode="ode", returns the
+    drift-kinetic vector field. If mode="sde", returns a tuple of (drift vector field, diffusion
+    vector field).
     """
     # Unpack the state
     r, varphi, z, upar, mu = y
@@ -176,13 +197,86 @@ def f_driftkinetic(t: Real, y: PusherState, args: PusherArgs):
 
     rdot = (jnp.cross(bu, gradh, axis=0) / pp.z + ppar[None, ...] * bstar / pp.m) / bstarpar[None, ...]
 
+    ## Drift part of the ODE
     drdt = rdot[0, ...]
     dvarphidt = rdot[1, ...] / r
     dzdt = rdot[2, ...]
     dupardt = -(jnp.sum(bstar*gradh, axis=0) / bstarpar) / pp.m
     dmudt = jnp.zeros_like(mu)
+    
+    if mode == "ode":
+        vf_drift = PusherState(drdt, dvarphidt, dzdt, dupardt, dmudt)
+        return vf_drift
+    
+    elif mode == "sde":
+        ## Diffusion part of the SDE
 
-    return PusherState(drdt, dvarphidt, dzdt, dupardt, dmudt)
+        ## Perpendicular coordinate vectors
+        e2 = jnp.array([-bu[1, ...], bu[0, ...], jnp.zeros_like(bu[0, ...])])
+        e3 = jnp.cross(bu, e2, axis=0)
+        e2 = e2 / jnp.linalg.norm(e2, axis=0)
+        e3 = e3 / jnp.linalg.norm(e3, axis=0)
+
+        ## Compute coordinate transform
+        # kinetic momentum, I think?
+        modp2 = ppar**2 + 2 * pp.m * mu * modb
+        modp = jnp.sqrt(modp2)
+        # pitch angle
+        xi = ppar / modp
+        # perpendicular energy fraction
+        e_perp = (1 - xi**2)
+
+
+        ## Computing the diffusion coefficients; from NRL plasma formulary, converted to SI
+        # A simple estimate for the coulomb logarithm for now
+        coulomb_log = 15.0
+        # Density and temperature of the colliding species
+        n_beta = 1e19 # for now, constant density in m^-3
+        t_beta = 0.25 # for now, constant temperature in keV
+        m_beta = 2.08793698e-5 # for now, deuterium mass in reference units
+        x_beta = m_beta * (modp2 / pp.m**2) / (2 * t_beta)
+        # Collision frequency prefactor
+        nu0 = e0_prefactor * n_beta * coulomb_log / (modp**3 / pp.m)
+        # Terms which appear in the diffusion coefficients
+        ginc, dginc = _gv_inc_gamma_psi(x_beta)
+
+        # Diffusion and drag coefficients
+        nu_s = ginc * nu0 * (pp.m/m_beta)
+        diff_par = 0.5 * (ginc/x_beta) * nu0 * (modp2)
+        diff_perp = ((1 - 0.5 / x_beta) * ginc + dginc) * nu0 * (modp2)
+        diff_x = ((diff_par - diff_perp) * e_perp / 2.0 + diff_perp) / bstarpar**2
+
+        # Compute the matrix elements; via Hirvijoki 2013
+        kp_par = jnp.sqrt(2 * diff_par)
+        kp_perp = jnp.sqrt(2 * diff_perp * e_perp / modp2)
+        kp_x = jnp.sqrt(2 * diff_x)
+
+        # Diffusion vector fields; spatial part
+        drdwt = jnp.array([e2[0, ...], e3[0, ...]]) * kp_x
+        dvarphidwt = jnp.array([e2[1, ...], e3[1, ...]]) * kp_x / r
+        dzdwt = jnp.array([e2[2, ...], e3[2, ...]]) * kp_x
+        # Diffusion vector fields; velocity part
+        dupardwt = jnp.array([
+            kp_par * xi / pp.m,
+            kp_perp * modp / pp.m
+            ])
+        dmudwt = jnp.array([
+            kp_par * 2 * mu / modp,
+            -kp_perp * xi * modp2 / (pp.m * modb)
+            ])
+
+        # Compute drift terms plus drag. n.b. since the Heun method converges to the stratonovich
+        # solution, we only include the drag term in the drift vector field
+        vf_drift = PusherState(drdt, dvarphidt, dzdt, dupardt - nu_s*(ppar/pp.m) , dmudt - 2*nu_s*mu)
+        vf_diff = PusherState(drdwt, dvarphidwt, dzdwt, dupardwt, dmudwt)
+
+        return (vf_drift, vf_diff)
+
+def f_driftkinetic(t: Real, y: PusherState, args: PusherArgs):
+    """
+    Push gyrokinetic tracers in (R, varphi, Z, upar, mu) coordinates.
+    """
+    return _gyro_vf(t, y, args, mode="ode")
 
 
 
@@ -197,93 +291,33 @@ def _sum(*x):
     return sum(x[1:], x[0])
 
 class GyroSDETerm(AbstractTerm, Generic[_Control]):
-    control: AbstractPath[_Control]
+    control1: AbstractPath[_Control]
+    control2: AbstractPath[_Control]
 
-    def vf(self, t: RealScalarLike, y: PusherState, args: PusherArgs) -> tuple[PyTree[ArrayLike], ...]:
-        # Unpack the state
-        r, varphi, z, upar, mu = y
-
-        # Unpack the arguments
-        eq = args.eq
-        pp = args.pp
-        #theta_map = args.theta_map
-        
-        ## Magnetic terms
-        psi_ev, ff_ev = eq.compute_psi_and_ff(r, z)
-        bv, bu, modb, gradmodb, curlbu = eq.compute_geom_terms(r, psi_ev, ff_ev)
-        # Bstar and Bstar parallel
-        bstar = bv + (pp.m / pp.z) * curlbu * upar[None, ...]
-        bstarpar = jnp.sum(bu*bstar, axis=0)
-
-        ## Compute the fields
-
-        # Evaluate the fields and their gradients over the list of field providers
-        grad_fields, fields = args.compute_grad_fields(t, r, varphi, z, psi_ev)
-        # Unpack
-        apar = fields.get('apar', 0.0)
-        (dapar_dr, dapar_dvarphi, dapar_dz) = grad_fields.get('apar', (0.0, 0.0, 0.0))
-        (dphi_dr, dphi_dvarphi, dphi_dz) = grad_fields.get('phi', (0.0, 0.0, 0.0))
-
-        ## Compute gradients of the Hamiltonian
-
-        # p_|| = dH/du_||
-        ppar = pp.m * upar - pp.z * apar
-
-        # Electric potential gradient
-        gradphi = jnp.array([dphi_dr, dphi_dvarphi / r, dphi_dz])
-        # Magnetic potential gradient
-        gradapar = jnp.array([dapar_dr, dapar_dvarphi / r, dapar_dz])
-        
-        ## Finally compute the (spatial) gradient of the Hamiltonian
-        gradh = mu * gradmodb + pp.z * gradphi - (pp.z / pp.m) * ppar[None, ...] * gradapar
-
-        rdot = (jnp.cross(bu, gradh, axis=0) / pp.z + ppar[None, ...] * bstar / pp.m) / bstarpar[None, ...]
-
-        ## Drift part of the SDE
-        drdt = rdot[0, ...]
-        dvarphidt = rdot[1, ...] / r
-        dzdt = rdot[2, ...]
-        dupardt = -(jnp.sum(bstar*gradh, axis=0) / bstarpar) / pp.m
-        dmudt = jnp.zeros_like(mu)
-
-        vf_drift = PusherState(drdt, dvarphidt, dzdt, dupardt, dmudt)
-
-        ## Diffusion part of the SDE
-
-        ## Compute coordinate transform
-        # kinetic momentum, I think?
-        modp = jnp.sqrt(ppar**2 + 2 * pp.m * mu * modb)
-        # pitch angle
-        xi = ppar / modp
-
-        kappax = 1.0
-        kappapar = 1.0
-        kappaperp = 1.0
-
-        
-        drdwt = (jnp.array([1.0 - bu[0, ...]**2, -bu[0, ...] * bu[1, ...], -bu[0, ...] * bu[2, ...]]) * kappax)
-        dvarphidwt = (jnp.array([-bu[1, ...] * bu[0, ...], 1.0 - bu[1, ...]**2, -bu[1, ...] * bu[2, ...]]) * kappax / r[None, ...])
-        dzdwt = (jnp.array([-bu[2, ...] * bu[0, ...], -bu[2, ...] * bu[1, ...], 1.0 - bu[2, ...]**2]) * kappax)
-        dupardwt = (jnp.array([xi, modp]) * (kappapar / pp.m))
-        dmudwt = (jnp.array([modp * (1 - xi**2), -modp**2 * xi]) * (jnp.sqrt((1-xi**2) / modp**2) / (pp.m * modb)) * kappaperp)
-
-        vf_diff = PusherState(drdwt.T, dvarphidwt.T, dzdwt.T, dupardwt.T, dmudwt.T)
-
-        return (vf_drift, vf_diff)
+    def vf(self, t: RealScalarLike, y: PusherState, args: PusherArgs) -> tuple[PusherState, PusherState]:
+        return _gyro_vf(t, y, args, mode="sde")
     
     def contr(self, t0: RealScalarLike, t1: RealScalarLike, **kwargs) -> tuple[PyTree[ArrayLike], ...]:
-        return (t1-t0, self.control.evaluate(t0, t1, **kwargs))
+        return (t1-t0, self.control1.evaluate(t0, t1, **kwargs), self.control2.evaluate(t0, t1, **kwargs))
 
     def prod(
-        self, vf: tuple[PyTree[ArrayLike], ...], control: tuple[PyTree[ArrayLike], ...]
+        self, vf: tuple[PusherState, PusherState], control: tuple[PyTree[ArrayLike], ...]
     ) -> Y:
         vf_drift, vf_diff = vf
-        contr_drift, contr_diff = control
-        out = (
-            jtu.tree_map(lambda v: contr_drift * v, vf_drift),
-            jtu.tree_map(lambda v: _prod(v, contr_diff), vf_diff),
+        contr_drift, contr_diff1, contr_diff2 = control
+        
+        # Note that we need a special product function here, since the diffusion vector field has
+        # a block diagonal form that needs to be taken into account
+
+        out_drift = jtu.tree_map(lambda v: contr_drift * v, vf_drift)
+        out_diff = PusherState(
+            jnp.sum(vf_diff.r * contr_diff1, axis=0),
+            jnp.sum(vf_diff.varphi * contr_diff1, axis=0),
+            jnp.sum(vf_diff.z * contr_diff1, axis=0),
+            jnp.sum(vf_diff.upar * contr_diff2, axis=0),
+            jnp.sum(vf_diff.mu * contr_diff2, axis=0)
         )
-        return jtu.tree_map(_sum, *out)
+        return jtu.tree_map(_sum, out_drift, out_diff)
     
     def vf_prod(
         self,
