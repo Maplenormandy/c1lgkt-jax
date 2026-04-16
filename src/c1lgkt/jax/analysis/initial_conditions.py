@@ -227,7 +227,8 @@ def integrals(input: dict[str, Any], context: dict) -> dict[str, Any]:
         varphi=varphi,
         z=z,
         upar=upar,
-        mu=mu
+        jperp1=jnp.sqrt(2*mu),
+        jperp2=jnp.zeros_like(mu)
     )
 
     args = context['args']
@@ -251,7 +252,8 @@ def from_integrals(input: dict[str, Any], context: dict) -> dict[str, Any]:
         varphi=input['varphi'],
         z=input['Z'],
         upar=upar,
-        mu=input['mu']
+        jperp1=jnp.sqrt(2*input['mu']),
+        jperp2=jnp.zeros_like(input['mu'])
     )
 
     pp = context['pp']
@@ -312,9 +314,13 @@ class ConstantLeaf(AbstractInputNode):
         
         match self.axes:
             case str(axis):
-                return {axis: jnp.asarray(value)}
+                output = jnp.asarray(value)
+                shape = jnp.shape(output)
+                return {axis: output, "shape": shape}
             case list(axes):
-                return {axis: jnp.asarray(val) for axis, val in zip(axes, value)}  # pyright: ignore
+                output = [jnp.asarray(val) for val in value]
+                shape = jnp.broadcast_shapes(*[jnp.shape(out) for out in output])
+                return {axis: out for axis, out in zip(axes, output)} | {"shape": shape}
             case _:
                 raise ValueError(f"Invalid type for axes: {type(self.axes)}. Must be str or list[str].")
 

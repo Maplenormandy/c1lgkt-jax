@@ -103,7 +103,8 @@ def realize_initial_conditions(ic_generator: InitialConditionGenerator, args: Pu
         varphi=ic['varphi'][mask],
         z=ic['Z'][mask],
         upar=ic['upar'][mask],
-        mu=ic['mu'][mask]
+        jperp1=jnp.sqrt(2*ic['mu'][mask]),
+        jperp2=jnp.zeros_like(ic['mu'][mask])
     )
 
         

@@ -150,7 +150,8 @@ def compute_integrals(t: Real, y: PusherState, args: PusherArgs) -> tuple[Scalar
     From the time, state, and PusherArgs, compute the Hamiltonian and the canonical toroidal angular momentum.
     """
     # Unpack the arguments
-    r, varphi, z, upar, mu = y
+    r, varphi, z, upar, jperp1, jperp2 = y
+    mu = 0.5 * (jperp1**2 + jperp2**2)
     eq = args.eq
     pp = args.pp
 
@@ -181,7 +182,8 @@ def compute_parallel_energy(t: Real, y: PusherState, integrals: tuple[Real, Real
     """
 
     # Unpack the arguments
-    r, varphi, z, upar, mu = y
+    r, varphi, z, upar, jperp1, jperp2 = y
+    mu = 0.5 * (jperp1**2 + jperp2**2)
     eq = args.eq
     pp = args.pp
     ham, lphi = integrals
@@ -200,7 +202,7 @@ def compute_parallel_energy(t: Real, y: PusherState, integrals: tuple[Real, Real
     apar = fields.get('apar', 0.0)
 
     # Compute the parallel energy
-    ppar0 = pp.m * omega * r * bv[1,:] / modb
+    ppar0 = pp.m * omega * r * bv[1,...] / modb
     kpar = kam + ppar0**2 / (2 * pp.m) - mu * modb - pp.z * (phi - omega * psi_ev[0])
 
     upar0 = (ppar0 + pp.z * apar) / pp.m

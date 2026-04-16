@@ -119,13 +119,17 @@ class PusherArgs(NamedTuple):
 
 class PusherState(NamedTuple):
     """
-    NamedTuple holding the state of a particle pusher
+    NamedTuple holding the state of a particle pusher.
+
+    We use cylindrical coordinates (R, varphi, Z) for the spatial coordinates, and (u_||, ln(mu)) for
+    the velocity space coordinates.
     """
     r: ScalarArray
     varphi: ScalarArray
     z: ScalarArray
     upar: ScalarArray
-    mu: ScalarArray
+    jperp1: ScalarArray
+    jperp2: ScalarArray
 
     @classmethod
     def empty(cls, nq: int) -> PusherState:
@@ -137,7 +141,8 @@ class PusherState(NamedTuple):
             varphi=jnp.empty(nq),
             z=jnp.empty(nq),
             upar=jnp.empty(nq),
-            mu=jnp.empty(nq)
+            jperp1=jnp.empty(nq),
+            jperp2=jnp.empty(nq)
         )
 
 # %% Functions for gyrokinetic particle pushing with zonally symmetric equilibria
@@ -159,7 +164,7 @@ def _gyro_vf(t: Real, y: PusherState, args: PusherArgs, *, mode: Literal["ode", 
     vector field).
     """
     # Unpack the state
-    r, varphi, z, upar, mu = y
+    r, varphi, z, upar, jperp1, jperp2 = y
 
     # Unpack the arguments
     eq = args.eq
@@ -172,6 +177,8 @@ def _gyro_vf(t: Real, y: PusherState, args: PusherArgs, *, mode: Literal["ode", 
     # Bstar and Bstar parallel
     bstar = bv + (pp.m / pp.z) * curlbu * upar[None, ...]
     bstarpar = jnp.sum(bu*bstar, axis=0)
+    # Compute mu
+    mu = 0.5 * (jperp1**2 + jperp2**2)
 
     ## Compute the fields
 
@@ -197,15 +204,19 @@ def _gyro_vf(t: Real, y: PusherState, args: PusherArgs, *, mode: Literal["ode", 
 
     rdot = (jnp.cross(bu, gradh, axis=0) / pp.z + ppar[None, ...] * bstar / pp.m) / bstarpar[None, ...]
 
+    # Compute the term related to the change in the magnetic moment
+    mu_change = jnp.sum(gradmodb*rdot, axis=0) / (2*modb)
+
     ## Drift part of the ODE
     drdt = rdot[0, ...]
     dvarphidt = rdot[1, ...] / r
     dzdt = rdot[2, ...]
     dupardt = -(jnp.sum(bstar*gradh, axis=0) / bstarpar) / pp.m
-    dmudt = jnp.zeros_like(mu)
+    djperp1dt = jnp.zeros_like(dupardt)
+    djperp2dt = jnp.zeros_like(dupardt)
     
     if mode == "ode":
-        vf_drift = PusherState(drdt, dvarphidt, dzdt, dupardt, dmudt)
+        vf_drift = PusherState(drdt, dvarphidt, dzdt, dupardt, djperp1dt, djperp2dt)
         return vf_drift
     
     elif mode == "sde":
@@ -218,13 +229,15 @@ def _gyro_vf(t: Real, y: PusherState, args: PusherArgs, *, mode: Literal["ode", 
         e3 = e3 / jnp.linalg.norm(e3, axis=0)
 
         ## Compute coordinate transform
-        # kinetic momentum, I think?
-        modp2 = ppar**2 + 2 * pp.m * mu * modb
+        # Kinetic pieces of perpendicular momentum
+        jmass = jnp.sqrt(pp.m * modb)
+        pperp1 = jperp1 * jmass
+        pperp2 = jperp2 * jmass
+        # kinetic momentum
+        modp2 = ppar**2 + pperp1**2 + pperp2**2
         modp = jnp.sqrt(modp2)
-        # pitch angle
-        xi = ppar / modp
-        # perpendicular energy fraction
-        e_perp = (1 - xi**2)
+        e_perp = (pperp1**2 + pperp2**2) / modp2
+
 
 
         ## Computing the diffusion coefficients; from NRL plasma formulary, converted to SI
@@ -246,9 +259,9 @@ def _gyro_vf(t: Real, y: PusherState, args: PusherArgs, *, mode: Literal["ode", 
         diff_perp = ((1 - 0.5 / x_beta) * ginc + dginc) * nu0 * (modp2)
         diff_x = ((diff_par - diff_perp) * e_perp / 2.0 + diff_perp) / bstarpar**2
 
-        # Compute the matrix elements; via Hirvijoki 2013
-        kp_par = jnp.sqrt(2 * diff_par)
-        kp_perp = jnp.sqrt(2 * diff_perp * e_perp / modp2)
+        # Compute the matrix elements
+        kp_par = jnp.sqrt(2 * diff_par / modp2)
+        kp_perp = jnp.sqrt(2 * diff_perp / modp2)
         kp_x = jnp.sqrt(2 * diff_x)
 
         # Diffusion vector fields; spatial part
@@ -256,19 +269,27 @@ def _gyro_vf(t: Real, y: PusherState, args: PusherArgs, *, mode: Literal["ode", 
         dvarphidwt = jnp.array([e2[1, ...], e3[1, ...]]) * kp_x / r
         dzdwt = jnp.array([e2[2, ...], e3[2, ...]]) * kp_x
         # Diffusion vector fields; velocity part
-        dupardwt = jnp.array([
-            kp_par * xi / pp.m,
-            kp_perp * modp / pp.m
-            ])
-        dmudwt = jnp.array([
-            kp_par * 2 * mu / modp,
-            -kp_perp * xi * modp2 / (pp.m * modb)
-            ])
+        dppardwt = jnp.array([
+            kp_perp * pperp2,
+            -kp_perp * pperp1,
+            kp_par * ppar,
+        ])
+        dpperp1dwt = jnp.array([
+            jnp.zeros_like(ppar),
+            kp_perp * ppar,
+            kp_par * pperp1,
+        ])
+        dpperp2dwt = jnp.array([
+            -kp_perp * ppar,
+            jnp.zeros_like(ppar),
+            kp_par * pperp2,
+        ])
 
         # Compute drift terms plus drag. n.b. since the Heun method converges to the stratonovich
         # solution, we only include the drag term in the drift vector field
-        vf_drift = PusherState(drdt, dvarphidt, dzdt, dupardt - nu_s*(ppar/pp.m) , dmudt - 2*nu_s*mu)
-        vf_diff = PusherState(drdwt, dvarphidwt, dzdwt, dupardwt, dmudwt)
+        #vf_drift = PusherState(drdt, dvarphidt, dzdt, dupardt - nu_s*(ppar/pp.m) , 2*nu_s*mu)
+        vf_drift = PusherState(drdt, dvarphidt, dzdt, dupardt - nu_s*(ppar/pp.m) , djperp1dt - nu_s*jperp1, djperp2dt - nu_s*jperp2)
+        vf_diff = PusherState(drdwt, dvarphidwt, dzdwt, dppardwt / pp.m, dpperp1dwt / jmass, dpperp2dwt / jmass)
 
         return (vf_drift, vf_diff)
 
@@ -315,7 +336,8 @@ class GyroSDETerm(AbstractTerm, Generic[_Control]):
             jnp.sum(vf_diff.varphi * contr_diff1, axis=0),
             jnp.sum(vf_diff.z * contr_diff1, axis=0),
             jnp.sum(vf_diff.upar * contr_diff2, axis=0),
-            jnp.sum(vf_diff.mu * contr_diff2, axis=0)
+            jnp.sum(vf_diff.jperp1 * contr_diff2, axis=0),
+            jnp.sum(vf_diff.jperp2 * contr_diff2, axis=0),
         )
         return jtu.tree_map(_sum, out_drift, out_diff)
     
