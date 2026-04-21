@@ -21,6 +21,8 @@ from ..custom_types import ScalarArray, ScalarArrayLike, VectorArray
 
 import re
 
+from ..analysis.file_utils import load_gfile
+
 # %%
 
 # List of variables expected in the magnetic geometry. Used to generate some code
@@ -109,18 +111,18 @@ class Equilibrium(eqx.Module):
         self.rmax = kwargs["rmax"]
         self.zmin = kwargs["zmin"]
         self.zmax = kwargs["zmax"]
-        self.rgrid = kwargs["rgrid"]
-        self.zgrid = kwargs["zgrid"]
+        self.rgrid = jnp.asarray(kwargs["rgrid"])
+        self.zgrid = jnp.asarray(kwargs["zgrid"])
         self.raxis = kwargs["raxis"]
         self.zaxis = kwargs["zaxis"]
         self.psix = kwargs["psix"]
         self.rx = kwargs["rx"]
         self.zx = kwargs["zx"]
-        self.psi = kwargs["psi"]
-        self.ff = kwargs["ff"]
-        self.psirz = kwargs["psirz"]
-        self.wallrz = kwargs["wallrz"]
-        self.lcfsrz = kwargs["lcfsrz"]
+        self.psi = jnp.asarray(kwargs["psi"])
+        self.ff = jnp.asarray(kwargs["ff"])
+        self.psirz = jnp.asarray(kwargs["psirz"])
+        self.wallrz = jnp.asarray(kwargs["wallrz"])
+        self.lcfsrz = jnp.asarray(kwargs["lcfsrz"])
 
         # Set up the interpolators
         self.interp_ff = interpax.Interpolator1D(self.psi, self.ff, method='cubic2', extrapolate=(self.ff[0], self.ff[-1]))
@@ -286,99 +288,8 @@ class Equilibrium(eqx.Module):
         """
         Loads a g-file and returns an instance of an equilibrium class.
         """
-        with open(filename, 'r') as f:
-            data = f.readlines()
-
-            # Start with the first line
-            tokens = data[0].split()
-            # Get the number of radial and vertical grid points
-            Nr = int(tokens[-2])
-            Nz = int(tokens[-1])
-            Npsi  = Nr
-
-            # Helper function to read a line of tokens
-            def read_tokens(line: int):
-                return list(map(float,re.findall(r'-?\d\.\d*[eE][-+]\d*', data[line])))
-
-            # The second line contains information for constructing RZ grid
-            rdim, zdim, rcentr, rmin, zmid = read_tokens(line=1)
-            rmax = rmin + rdim
-            zmin = zmid - zdim / 2
-            zmax = zmid + zdim / 2
-
-            rgrid = jnp.linspace(rmin, rmax, Nr)
-            zgrid = jnp.linspace(zmin, zmax, Nz)
-
-            # The third line contains R,Z of magnetic axis, psi at magnetic axis, and LCFS
-            raxis, zaxis, psiaxis, psix, bcentr = tokens = read_tokens(line=2)
-
-            # Out of convenience, renormalize psi such that psiaxis = 0
-            psix -= psiaxis
-            
-            # read EFIT-calculated plasma current, psi at magnetic axis (duplicate),
-            # dummy, R of magnetic axis (duplicate), dummy
-            ip, _, _, _, _ = read_tokens(line=3)
-
-            # Skip the 5th line
-            _, _, _, _, _ = read_tokens(line=4)
-
-            # Start keeping track of the current line
-            line = 5
-
-            # Helper function to read arrays
-            def read_array(begin_read: int, npts: int):
-                # Number of rows to read in an array
-                nrows = npts//5
-                if npts % 5 != 0:     # catch truncated rows
-                    nrows += 1
-
-                temp_array = []
-                for i in range(nrows):
-                    temp_array.extend(read_tokens(line=begin_read + i))
-                return begin_read + nrows, jnp.array(temp_array)
-            
-            # First, read in ff
-            line, ff = read_array(line, Npsi)
-            # NOTE: Sign convention for ff is different in g-file vs eqd-file; need to flip it
-            ff = -ff
-            # Next, read pressure
-            line, fluxPres = read_array(line, Npsi)
-            # Read ffprim
-            line, ffprim = read_array(line, Npsi)
-            # Read pprime
-            line, pprime = read_array(line, Npsi)
-
-            # psi grid on which the flux functions are defined
-            psi = jnp.linspace(0, psix, Npsi)
-
-            # Now, read the 2d psirz array
-            line, psirz = read_array(line, Nr * Nz)
-            psirz = psirz.reshape((Nz, Nr)) - psiaxis  # renormalize psirz
-
-            # Now read q profile
-            line, qpsi = read_array(line, Npsi)
-
-            # Now, we read the LCFS and wall points
-            tokens = data[line].split()
-            Nlcfs = int(tokens[0])
-            Nwall = int(tokens[1])
-            line += 1
-
-            line, lcfsrz = read_array(line, 2*Nlcfs)
-            lcfsrz = lcfsrz.reshape((Nlcfs, 2)).T
-            line, wallrz = read_array(line, 2*Nwall)
-            wallrz = wallrz.reshape((Nwall, 2)).T
-
-            # Estimate the X-point location from the LCFS points.
-            # TODO: Need to do something about multiple X-points
-            zmin_idx = jnp.argmin(lcfsrz[1,:])
-            zx = lcfsrz[1, zmin_idx]
-            rx = lcfsrz[0, zmin_idx]
-
-        # Use reflection to set these variables out of laziness
-        local_vars = locals()
-        eq_kwargs = {key: local_vars[key] for key in eqd_vars}
-        return cls(**eq_kwargs)
+        gfile = load_gfile(filename)
+        return cls(**gfile)
             
     @classmethod
     def build_from_config(cls, obj: dict) -> Equilibrium:

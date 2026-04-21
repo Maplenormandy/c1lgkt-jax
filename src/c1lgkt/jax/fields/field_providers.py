@@ -29,6 +29,8 @@ from ..custom_types import ScalarArray, ScalarArrayLike, VectorTuple, ScalarFiel
 
 from functools import partial, reduce
 
+from ..analysis.file_utils import load_pfile
+
 # %% Allowable field signatures
 
 type_registry: dict[str, Type['AbstractFieldProvider']] = {}
@@ -155,66 +157,44 @@ class ZonalFieldProvider(AbstractFieldProvider):
 
     @classmethod
     def from_pfile(cls: Type[ZonalFieldProvider], filename: str, eq: Equilibrium) -> ZonalFieldProvider:
-        with open(filename, 'r') as f:
-            data = f.readlines()
+        pfile = load_pfile(filename)
 
-            # Find the line where the data starts
-            for line in range(len(data)):
-                if 'er(kV/m)' in data[line]:
-                    break
+        # Get psi grid
+        psi_grid = pfile['psinorm'] * eq.psix
 
-            # Determine the number of psi points from the header line
-            tokens = data[line].split()
-            n_psi = int(tokens[0])
+        # Get the ExB rotation frequency
+        omega_grid = pfile['omgeb']
+        omegaprime_grid = pfile['domgeb/dpsiN'] / eq.psix
 
-            # Read in the grid values
-            psi_grid = np.zeros(n_psi)
-            er_grid = np.zeros(n_psi)
-            erprime_grid = np.zeros(n_psi)
+        # We add a small scrape-off-layer region to ensure the fields go to zero
+        scale = (1.0 / eq.psix)/0.005
+        c1 = omega_grid[-1]
+        c2 = omegaprime_grid[-1] + scale * c1
 
-            # Now read in the data
-            for k in range(line+1, line+1+n_psi):
-                values = list(map(lambda t: float(t.strip()), data[k].split()))
-                psi_grid[k - (line+1)] = values[0] * eq.psix
-                er_grid[k - (line+1)] = values[1]
-                erprime_grid[k - (line+1)] = values[2] / eq.psix
+        # Create extra grid points beyond the LCS
+        psi_extra = np.arange(1.005, 1.2, 0.005) * eq.psix
 
-            # We add a small scrape-off-layer region to ensure the fields go to zero
-            scale = (1.0 / eq.psix)/0.005
-            c1 = er_grid[-1]
-            c2 = erprime_grid[-1] + scale * c1
+        # Compute the fields at the extra grid points using an exponential decay model
+        omega_extra = (c1 + c2 * (psi_extra - eq.psix)) * np.exp(-scale * (psi_extra - eq.psix))
+        omegaprime_extra = (-scale * omega_extra + c2 * np.exp(-scale * (psi_extra - eq.psix)))
 
-            # Create extra grid points beyond the LCS
-            psi_extra = np.arange(1.005, 1.2, 0.005) * eq.psix
+        # Extend the grids with the extra points
+        psi_grid = np.concatenate((psi_grid, psi_extra))
+        omega_grid = np.concatenate((omega_grid, omega_extra))
+        omegaprime_grid = np.concatenate((omegaprime_grid, omegaprime_extra))
 
-            # Compute the fields at the extra grid points using an exponential decay model
-            er_extra = (c1 + c2 * (psi_extra - eq.psix)) * np.exp(-scale * (psi_extra - eq.psix))
-            erprime_extra = (-scale * er_extra + c2 * np.exp(-scale * (psi_extra - eq.psix)))
+        # Interpolate on a dense grid
+        omega_spline = interpax.Interpolator1D(psi_grid, omega_grid, kind='cubic', fx=omegaprime_grid)
+        psi_dense = jnp.linspace(0.0, eq.psix*1.2, 512, endpoint=False)
+        omega_dense = omega_spline(psi_dense)
 
-            # Extend the grids with the extra points
-            psi_grid = np.concatenate((psi_grid, psi_extra))
-            er_grid = np.concatenate((er_grid, er_extra))
-            erprime_grid = np.concatenate((erprime_grid, erprime_extra))
+        # Integrate to get the potential; note we have a different sign convention for the toroidal rotation
+        phi = -jnp.concatenate((np.array([0]), np.cumsum((omega_dense[:-1] + omega_dense[1:]) * 0.5 * np.diff(psi_dense))))
 
-            # In order to fit the electric field and its derivative, we upsample the data
-            er_spline = interpax.Interpolator1D(psi_grid, er_grid, kind='cubic', fx=erprime_grid)
-            # Hardcoded upsampling to 512 points; should be good enough for now, but could make this more flexible later if needed
-            psi_dense = jnp.linspace(0.0, eq.psix*1.2, 512, endpoint=False)
-            er_dense = er_spline(psi_dense)
-            
-            # We need to compute R on the outboard midplane in order to integrate the electric field
-            r_outer = jnp.linspace(eq.raxis, eq.rmax, 128)
-            psi_outer = eq.interp_psi(r_outer, jnp.full_like(r_outer, eq.zaxis))
-            interp_router = interpax.Interpolator1D(psi_outer, r_outer, method='cubic2')
-            r_dense = interp_router(psi_dense)
+        # Set up interpolators
+        interp_phi = interpax.Interpolator1D(psi_dense, phi - phi[-1], method='cubic2')
 
-            # Integrate the electric field to get the potential
-            phi = -jnp.concatenate((jnp.array([0]), jnp.cumsum((er_dense[:-1] + er_dense[1:]) * (jnp.diff(r_dense)) * 0.5)))
-
-            # Set up interpolators
-            interp_phi = interpax.Interpolator1D(psi_dense, phi - phi[-1], method='cubic2')
-
-            return cls(interp_phi, fields='phi')
+        return cls(interp_phi, fields='phi')
         
     @classmethod
     def _build_from_config(cls, config: dict, eq: Equilibrium) -> ZonalFieldProvider:
