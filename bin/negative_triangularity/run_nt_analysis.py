@@ -24,6 +24,8 @@ from netCDF4 import Dataset
 from jaxtyping import ArrayLike, Real
 from tqdm import tqdm
 
+from pathlib import Path
+
 # %% Load my own libraries
 from c1lgkt.jax.analysis.configuration import load_yaml_config, realize_initial_conditions
 import c1lgkt.jax.particles.particle_motion as particle_motion
@@ -31,7 +33,8 @@ import c1lgkt.jax.particles.particle_tools as particle_tools
 
 # %% Load configuration
 
-args, ic_gen = load_yaml_config('./scratch/data/nt_analysis.yaml')
+
+args, ic_gen, analysis = load_yaml_config('./scratch/data/nt_resonance_analysis.yaml')
 y0, mask, ic = realize_initial_conditions(ic_gen, args)
 
 eq = args.eq
@@ -44,16 +47,16 @@ solver = diffrax.Dopri5()
 saveat = diffrax.SaveAt(t0=True, t1=True, steps=True)
 stepsize_controller = diffrax.PIDController(rtol=1e-8, atol=1e-8)
 
-# Test f_driftkinetic
-dy0 = particle_motion.f_driftkinetic(t0, y0, args)
-
 # %% Integrate particle trajectories in blocks and compute punctures
 
 import pickle
 
-num_blocks = 512
-#num_blocks = 64
-save_interval = 64
+num_blocks = analysis['num_blocks']
+save_interval = analysis['save_interval']
+output_dir = Path(analysis['output_dir'])
+# Make the output directory if it doesn't exist yet
+os.makedirs(output_dir, exist_ok=True)
+
 ppuncs = particle_tools.PunctureData.empty_list_like(y0)
 npuncs = particle_tools.PunctureData.empty_list_like(y0)
 ppuncs_poloidal = particle_tools.PunctureData.empty_list_like(y0)
@@ -61,7 +64,7 @@ npuncs_poloidal = particle_tools.PunctureData.empty_list_like(y0)
 
 pbar = tqdm(range(num_blocks), dynamic_ncols=True)
 for i in pbar:
-    pbar.set_description('t = {:.6f}'.format(t0))
+    #pbar.set_description('t = {:.6f}'.format(t0))
 
     # Integrate particle trajectories
     sol = diffrax.diffeqsolve(
@@ -72,7 +75,7 @@ for i in pbar:
     )
 
     # Extract solution and compute punctures
-    r_sol, varphi_sol, z_sol, vpar_sol, mu_sol = sol.ys # pyright: ignore
+    r_sol, varphi_sol, z_sol, vpar_sol, jperp1_sol, jperp2_sol = sol.ys # pyright: ignore
     ppuncs_i, npuncs_i = particle_tools.compute_punctures(sol.ts, sol.ys, z_sol - eq.zaxis) # pyright: ignore
 
     # Accumulate punctures
@@ -92,20 +95,32 @@ for i in pbar:
         varphi=varphi_sol[-1],
         z=z_sol[-1],
         upar=vpar_sol[-1],
-        mu=mu_sol[-1]
+        jperp1=jperp1_sol[-1],
+        jperp2=jperp2_sol[-1]
     )
 
-    
+    ready_to_save = True
+    not_ready = 0
 
-    if (i+1)%save_interval == 0:
+    for k in range(len(ppuncs)):
+        if len(ppuncs[k].tp) < 2 and len(npuncs[k].tp) < 2:
+            ready_to_save = False
+            not_ready += 1
+    
+    pbar.set_description('left = {}'.format(not_ready))
+
+    if (i+1)%save_interval == 0 or ready_to_save:
         # Save punctures
-        with open(f'./scratch/outputs/nt/puncs_long_pair_{i//save_interval}.pkl', 'wb') as f:
+        #with open(output_dir / f'puncs_{i//save_interval}.pkl', 'wb') as f:
+        with open(output_dir / f'puncs_resonance.pkl', 'wb') as f:
             pickle.dump((ppuncs, npuncs), f)
             #pickle.dump((ppuncs, npuncs, ppuncs_poloidal, npuncs_poloidal), f)
 
         # Clear out old punctures to save memory
         ppuncs = particle_tools.PunctureData.empty_list_like(y0)
         npuncs = particle_tools.PunctureData.empty_list_like(y0)
+
+        break
 
         #ppuncs_poloidal = particle_tools.PunctureData.empty_list_like(y0)
         #npuncs_poloidal = particle_tools.PunctureData.empty_list_like(y0)

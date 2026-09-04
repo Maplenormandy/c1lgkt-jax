@@ -21,6 +21,7 @@ default_context = {
     'pi': jnp.pi,
     'e': jnp.e,
     'sqrt': jnp.sqrt,
+    'jnp': jnp,
 }
 
 # Check for handlebars in the args and kwargs, and replace them with the evaluated expressions
@@ -63,7 +64,7 @@ def build_pusher_args(config: dict) -> PusherArgs:
     return PusherArgs(eq=eq, pp=pp, fields=fields)
 
 
-def load_yaml_config(path: str) -> tuple[PusherArgs, InitialConditionGenerator]:
+def load_yaml_config(path: str) -> tuple[PusherArgs, InitialConditionGenerator, dict]:
     """
     Loads a YAML configuration file and returns it as a dictionary
     """
@@ -71,12 +72,13 @@ def load_yaml_config(path: str) -> tuple[PusherArgs, InitialConditionGenerator]:
     with open(path, 'r') as f:
         configs = list(yaml.safe_load_all(f))
 
-    if len(configs) != 2:
-        raise ValueError(f'Expected 2 documents in the YAML file, but got {len(configs)}')
+    if len(configs) != 3:
+        raise ValueError(f'Expected 3 documents in the YAML file, but got {len(configs)}')
 
     pusher_args = build_pusher_args(configs[0])
     ic_generator = build_initial_conditions(configs[1])
-    return pusher_args, ic_generator
+    analysis_config = configs[2]
+    return pusher_args, ic_generator, analysis_config
 
 
 def realize_initial_conditions(ic_generator: InitialConditionGenerator, args: PusherArgs) -> tuple[PusherState, Bool[Array, "..."], dict[str, Any]]:

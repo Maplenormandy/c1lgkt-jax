@@ -1,0 +1,278 @@
+\documentclass[]{article}
+
+\usepackage{fullpage}
+\usepackage{physics}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{url}
+\usepackage{comment}
+
+%opening
+\title{Non-Equilibrium Steady States}
+\author{Norman M. Cao}
+
+\begin{document}
+
+\maketitle
+
+
+
+\section{Warm-Up: Vlasov Equation}
+
+Consider the 1D Vlasov equation with a simple diffusion plus drag collision operator
+\begin{equation}
+    \partial_t f + v \partial_x f + E(x,t) \partial_v f = -\partial_v (-\gamma v f - D \partial_v f)
+\end{equation}
+where we take \(E\) to be an applied field
+
+Observe the following: suppose \(f(x,v,t)\) is a solution to the Vlasov equation.
+Consider the parity and time flip operators
+\begin{equation*}
+    \mathcal{P}[f](x,v,t) = f(-x,-v,t), \quad \mathcal{T}[f](x,v,t) = f(x,-v,-t)
+\end{equation*}
+
+
+\section{Monte Carlo Solution of Transport Equations}
+
+In this section, we discuss the strategy for using Monte Carlo in combination with the Feynman-Kac formula to solve certain transport equations.
+
+
+\subsection{Problem Setup}
+
+First, we discuss our strategy for dealing with the collision operator.
+Let's start with the nonlinear Landau collision operator, which is a Fokker-Planck operator of the form
+\begin{equation}
+	C_{ab} = \pdv{\vb{v}_a} \cdot \left[\vb{B}_{ab} f_a - \vb{D}_{ab} \cdot \pdv{f_a}{\vb{v}_a}\right]
+\end{equation}
+See \url{https://farside.ph.utexas.edu/teaching/plasma/Plasma/node38.html} for definitions of \(\vb{B}_{ab}, \vb{D}_{ab}\) (note we have absorbed the mass factor into these definitions).
+
+The gyrokinetic Vlasov equation can be written in conservative form
+\begin{equation}
+	\pdv{(B_\parallel^* f_a)}{t} + \nabla \cdot (\dot{\vb{R}} B_\parallel^* f_a) + \pdv{(\dot{u}_\parallel B_\parallel^* f_a)}{u_\parallel} = \sum_{b} B_\parallel^* C_{ab}^{gk}[f_a, f_b]
+\end{equation}
+where \(C_{ab}^{gk}\) is the gyroaveraged collision operator.
+We assume that we can write this in Fokker-Planck form.
+
+The key strategy we take is to ignore the conservation properties of the collision operator, and simply treat it as a velocity-space diffusion operator.
+Similar to how the fields are not computed self-consistently from the particles, the collisional drag and diffusion are not computed self-consistently from the particle distributions.
+Energy/momentum is not conserved in the test particle picture even in the collisionless case, as they exchange energy with the fields.
+However, if the time-dependent fields were known, then the test particle picture would be exact.
+
+Let's generalize this situation a bit.
+Suppose \(F_\alpha(z)\) satisfies the Fokker-Planck equation
+\begin{equation*}
+	\pdv{F_\alpha}{t} + \pdv{\vb{z}} \cdot \left[\vb{b}_\alpha[F] F_\alpha - \vb{D}_\alpha[F] \cdot \pdv{F_\alpha}{\vb{z}}\right] = 0
+\end{equation*}
+where \(\vb{z}\) is the phase space coordinate, and \(\vb{b}_\alpha, \vb{D}_\alpha\) are the drift and diffusion coefficients respectively, depending on \(F = F_1, ..., F_n\).
+Supposing that this nonlinear Fokker-Planck equation satisfies some (possibly nonlinear) conservation law \(\dv{t}Q[F] = 0\), we can consider
+\begin{equation*}
+	\pdv{G_\alpha}{t} + \pdv{\vb{z}} \cdot \left[\vb{b}_\alpha[H] G_\alpha - \vb{D}_\alpha[H] \cdot \pdv{G_\alpha}{\vb{z}}\right] = 0
+\end{equation*}
+While in general we no longer expect \(\dv{t} Q[G] = 0\), the conservation law will still hold if \(H=G\).
+Thus, we can think about solving just the transport part of the equation with a fixed background \(H\), and potentially iterating to self-consistency.
+
+\subsection{Periodic Solutions to Transport Equations}
+We now focus on
+\begin{equation}
+	\pdv{G}{t} + \pdv{\vb{z}} \cdot \left[\vb{b}(\vb{z}, t) G - \vb{D}(\vb{z}, t) \cdot \pdv{G}{\vb{z}}\right] = \pdv{G}{t} - \mathcal{L}(t)[G] = S(\vb{z}, t)
+\end{equation}
+subject to the boundary conditions
+\begin{equation*}
+	G = g(\vb{z}, t) \text{ on } \partial \Omega
+\end{equation*}
+where \(\vb{b}(\vb{z}, t), \vb{D}(\vb{z}, t), S(\vb{z}, t), g(\vb{z}, t)\) are periodic in time with period \(T\).
+We want to find a periodic solution \(G(\vb{z}, t+T) = G(\vb{z}, t)\).
+
+The first trick we do is to convert the inhomogeneous boundary conditions to homogeneous ones.
+Let \(G = U + V\) where \(V\) is a periodic function which satisfies the boundary conditions, but not necessarily the PDE.
+Then, \(U\) satisfies the PDE, but with homogeneous boundary conditions and a modified (but still time-periodic) source term, which we also call \(S\).
+Thus, we focus on solving the homogeneous Dirichlet boundary condition case.
+
+Let \(\mathcal{P}_{s}^{t}\) be the evolution operator taking the solution of the homogeneous Dirichlet problem from time \(s\) to time \(t\).
+Starting with initial data \(U(0)\), we have (via Duhamel's principle)
+\begin{equation*}
+	U(t) = \mathcal{P}_{0}^{t}[U(0)] + \int_{0}^{t} \mathcal{P}_{\tau}^{t}[S(\tau)] \dd{\tau}
+\end{equation*}
+To enforce periodicity, we require \(U(0) = U(T)\), so we can write
+\begin{equation}
+	(\mathcal{I} - \mathcal{P}_{0}^{T}) U(0) = \int_{0}^{T} \mathcal{P}_{\tau}^{T}[S(\tau)] \dd{\tau}
+\end{equation}
+This equation allows us to solve for the initial data \(U(0)\) which result in a periodic solution.
+
+Note that formally, \((\mathcal{I} - A)^{-1} = \sum_{m=0}^{\infty} A^m\) for any operator \(A\) with spectral radius less than 1.
+This gives an explicit formal series representation of the solution:
+\begin{align*}
+	U(t) &= \mathcal{P}_{0}^{t} \sum_{m=0}^{\infty} (\mathcal{P}_{0}^{T})^m \left[\int_{0}^{T} \mathcal{P}_{\tau}^{T}[S(\tau)] \dd{\tau}\right] \\
+	&= \int_{0}^{T} \sum_{m=0}^{\infty} \mathcal{P}_{\tau}^{t + (m+1)T} [S(\tau)] \dd{\tau} \\
+\end{align*} 
+
+Now, for kinetic problems, we are interested in computing temporally-averaged spatially-weighted velocity moments of \(G\); these will take the form of linear functionals of \(G\) that look like
+\begin{equation*}
+	\langle \eta, G \rangle = \int_{0}^{T} \int_{\Omega} \eta(\vb{z},t) G(\vb{z},t) \dd{\vb{z}} \dd{t}
+\end{equation*}
+
+Consider the adjoint to the Fokker-Planck equation, i.e. the Kolmogorov backward equation:
+\begin{equation}
+	-\pdv{w}{t} -\vb{b}(\vb{z},t) \cdot \pdv{w}{\vb{z}} - \pdv{\vb{z}} \cdot \left[\vb{D}(\vb{z},t) \cdot \pdv{w}{\vb{z}}\right] = \eta(\vb{z},t)
+\end{equation}
+with spatial boundary conditions \(w = 0\) on \(\partial \Omega\), and periodic in time \(w(0) = w(T)\).
+Observe that
+\begin{align*}
+	\langle \eta, G \rangle
+	&= \int_{0}^{T} \int_{\Omega} \left[-\pdv{w}{t} -\vb{b} \cdot \pdv{w}{\vb{z}} - \pdv{\vb{z}} \cdot \left(\vb{D} \cdot \pdv{w}{\vb{z}}\right)\right] G \dd{\vb{z}} \dd{t} \\
+	&= \int_{0}^{T} \int_{\Omega} w \left[\pdv{G}{t} + \pdv{\vb{z}} \cdot \left(\vb{b} G - \vb{D} \cdot \pdv{G}{\vb{z}}\right)\right] \dd{\vb{z}} \dd{t} \\
+	&= \int_{0}^{T} \int_{\Omega} w S \dd{\vb{z}} \dd{t} = \langle w, S \rangle
+\end{align*}
+In other words, solving the adjoint equation allows us to compute the desired moments of \(G\) without explicitly computing \(G\) itself.
+
+\subsection{Monte Carlo Estimation}
+
+The solution to the Kolmogorov backward equation can be represented as an expectation over stochastic trajectories.
+For \(t > s\), let \(\vb{Z}_t(\vb{z},s)\) satisfy the foward-time SDE
+\begin{equation}
+	\begin{gathered}
+		\dd{\vb{Z}_t} = \tilde{\vb{b}}(\vb{Z}_t, t) \dd{t} + \sigma(\vb{Z}_t, t) \cdot \dd{\vb{W}_t} \\
+		\vb{Z}_\alpha(\vb{z}, s) = \vb{z}
+	\end{gathered}
+\end{equation}
+Then, we have the Feynman-Kac representation (TODO: check sign)
+\begin{equation*}
+	w(\vb{z}, s) = \mathbb{E}[w(\vb{Z}_T(\vb{z},s), T)] + \mathbb{E}\left[\int_{s}^{T} \eta(\vb{Z}_t(\vb{z}, s), t) \dd{t}\right]
+\end{equation*}
+
+\subsection{Computing Transport via Periodic Orbits}
+
+Consider an observable that looks like \(\int_\Omega F(\vb{z}, t) \eta(\vb{z}) \dd{z}\)
+
+Average over a finite time interval \([t_0, t_1]\) of IVP \(\rightarrow\) approximated by the `long-time' average \(\rightarrow\) approximated by average over a low-diml chaotic attractor \(\rightarrow\) approximated by weighted average over smaller set of periodic orbits of the nonlinear GK-VP \(\rightarrow\) approximate nonlinear UPOs of GK-VP via periodic solutions to the passive transport problem (9), where \(\vb{b}(\vb{z},t)\) and \(\vb{D}(\vb{z},t)\) are computed from equilibrium + eigenmode perturbation.
+
+\begin{equation*}
+	\ev{A} = \sum_{\text{periodic orbits } p} w_p \ev{A}_p \approx \sum_{\text{some smaller set of periodic orbits } p} \tilde{w}_p \ev{A}_p
+\end{equation*}
+
+\section{Stuff}
+
+
+\subsection{Physical Picture for Avalanche Termination via Eddy Detachment}
+
+% \begin{figure}
+% 	\centering
+% 	\includegraphics[width=0.8\linewidth]{figures/sketch_reconnection.png}
+% 	\caption{Sketch of lifecycle of an ITG instability, from the linear phase to vortex induction and finally to eddy detachment. Temperatures are denoted with red/blue, densities with orange/green, and \(E \times B\) flows are denoted with purple. The potential vorticity front associated with the zonal jet is shown in black.}
+% 	\label{fig:sketch_reconnection}
+% \end{figure}
+
+Finally, we end this section with some speculation on a physical picture which could explain the observed termination of avalanches at the shearless torus.
+We remark that there is a rich literature on eddy detachment in oceanic jets [refs], from which we draw inspiration.
+Starting with the left panel of Figure~\ref{fig:sketch_reconnection}, we consider an initially perturbed zonal jet in the presence of a background temperature gradient.
+In the usual textbook picture of the ITG instability, the divergent flow of ion gyrocenter density induced by the energy-dependent \(\nabla B\)-drift leads to an accumulation of ion gyrocenter density \(N_i\) which is out of phase with the perturbation.
+This creates radial flows which reinforce the initial perturbation, leading to the linear phase of the instability.
+
+Continuing with the center panel, recall that the shearless region is associated with a steeper ion gyrocenter density, corresponding to a potential vorticity front.
+The radial displacement of ion gyrocenter density creates vortical flows which, in combination with the zonal jet flows, creates a characteristic `\(\Omega\)'-shaped flow structure illustrated in the figure.
+Note that there are still ion gyrocenter perturbations associated with the temperature gradient, which continue to drive radial flows (not shown).
+In kinematic models these structures can be associated with the homoclinic island topology of nontwist flows [ref], which are shown in the figure.
+Notably, there is a relative stagation point where the zonal jet can begin to pinch off and reconnect with itself; see [ref Pratt] and others for examples of how this detachment might occur in detail.
+
+In the final panel, the perturbation has pinched off and detached from the zonal jet.
+Similar to models of rotating blobs in the edge [refs], the detached eddy consists of a monopolar potential associated with the detachment across the front, plus a dipolar potential associated with the ion \(\nabla B\) drift.
+These warm and cold core `rings' bear strong resemblance to the warm and cold core rings observed in oceanic jets, such as the Gulf Stream [refs].
+Taking into account their structure along the field line, these detached eddies would correspond to rotating filaments.
+While radial motion continues for the detached eddies, the radial motion of cool (resp. warm) core rings now tends to entrain the warmer (resp. cooler) ambient plasma, terminating growth of the eddy.
+We propose this as a potential mechanism responsible for the termination of avalanches at the shearless region that merits further study.
+
+
+
+
+
+
+\newcommand{\citep}[1]{[ref]}
+\newcommand{\citet}[1]{[ref]}
+
+
+\subsection{Role of Zonal Flow Curvature}
+
+As discussed earlier, the presence of zonal jets seems to promote wave trapping, observed as quasi-coherent radially localized oscillations in the turbulent fluctuations.
+The key idea is that in local simulations, the onset of strong turbulent transport tends to occur at a critical nonlinear gradient which is above the linear stability threshold \citep{dimits_comparisons_2000}, an effect which disappears when the zonal flows are removed from the system.
+In \citet{zhu_theory_2020,zhu_theory_jpp_2020} based on analysis of reduced drift-wave models, it was proposed that the stabilization of the primary instability by wave trapping and anti-trapping could explain this nonlinear upshift of the critical gradient.
+The key difference between wave trapping and the lowest-order eikonal formulation of DW-ZF interaction described by the wave kinetic equation is the inclusion of coherent wave interference leading to quantization of the wave eigenmodes, rather than simply considering the effect of incoherent scattering of the the drift waves by the zonal flows.
+
+We now emulate the theory of \citet{zhu_theory_2020} to derive a condition relating the local linear growth rate of a ballooning mode to the characteristics of the zonal flow which will lead to its linear stabilization via wave trapping or anti-trapping.
+This provides a necessary condition for the shearless transport barrier theory to apply -- if there is no stabilization of the primary instability by the zonal flows, then it is unlikely that the dynamical system model depending on the radially trapped mode will accurately describe the test particle dynamics.
+Meanwhile, if the zonal flow curvature is strong enough to stabilize the primary instabilities and lead to marginally stable tertiary instabilities, this could be a potential regime of validity for the existence of shearless transport barriers.
+
+For ballooning modes in the absence of background zonal flows or zonal shear, the local gyrokinetic ordering at lowest order typically results in eigenmodes which satisfy a local dispersion relation \(\omega = \varpi_{loc}(n,\rho,\theta_k)\) depending on the toroidal mode number \(n\), the radial location \(\rho\), and the ballooning angle \(\theta_k\).
+We next make the low Mach number assumption for the zonal flows and further assume that parallel velocity gradients can be ignored, in which case the dominant effect of the zonal flows is to provide a Doppler shift to the local dispersion relation, \(\omega = \varpi(n,\rho,\theta_k) = n \Omega_E(\rho) + \varpi_{loc}(n,\rho,\theta_k)\).
+
+We expand the local dispersion relation around either a maximum or minimum of the zonal flow \(\Omega_E(\rho) \approx \Omega_E(\rho_0) + \tfrac{1}{2}\mathcal{C} (\rho-\rho_0)^2\), and furthermore assume that the radial variation of the zonal flow frequency dominates the radial variation of the local dispersion relation.
+We also assume that both the growth rate and real frequency of the local mode peak at a given ballooning angle \(\theta_k = \theta_0\).
+Shifting coordinates \(\bar{\rho} = \rho - \rho_0\) and \(\bar{\theta}_k = \theta_k - \theta_0\) results in
+\begin{equation}
+    \varpi(n,\rho,\theta_k) \approx \varpi_0 + \frac{1}{2} n \mathcal{C} \bar{\rho}^2 + \frac{1}{2} \varpi_{\theta_k\theta_k} \bar{\theta}_k^2
+\end{equation}
+where \(\varpi_0 = \varpi(n,\rho_0,\theta_0)\) and \(\varpi_{\theta_k \theta_l} = \frac{\partial^2 \varpi_0}{\partial \theta_k^2}(n,\rho_0,\theta_0)\).
+
+Inserting this expansion of the local dispersion relation in the ballooning-Schr\"{o}dinger equation [refs?], the radial envelope then satisfies the quantum harmonic oscillator equation \citep{xie_global_2016}
+\begin{equation}
+    \frac{1}{2} \varpi_{\theta_k \theta_k} \frac{\mathrm{d}^2\bar{A}(\bar{\rho})}{\mathrm{d}\bar{\rho}^2} + k_\theta^2 \hat{s}^2 [\omega - (\varpi_0 + \frac{1}{2}n \mathcal{C} \bar{\rho}^2)] \bar{A}(\bar{\rho}) = 0
+\end{equation}
+where \(k_\theta := n q / \rho\) is the poloidal wavenumber and \(\hat{s} := (\rho/q) dq/d\rho\) is the magnetic shear.
+This equation has solutions
+\begin{equation} \label{eq:qho_stability}
+    \bar{A}(\bar{\rho}) = \exp(-\frac{\bar{\rho}^2}{2 \lambda}) H_m(\bar{\rho}/\sqrt{\lambda}), \qquad \omega = \varpi_0 + (m + \tfrac{1}{2}) \frac{n \mathcal{C} \lambda}{2}
+\end{equation}
+where \(\lambda = (k_\theta \hat{s})^{-1} \sqrt{\varpi_{\theta_k \theta_k} / (n \mathcal{C}})\) and the branch of the square root with \(\operatorname{Re}[\lambda] > 0\) is taken which guarantees that solutions are radially localized by the Gaussian envelope.
+
+Let \(\gamma_0 = \operatorname{Im}[\varpi_0]\), which will be the growth rate of the local mode before the radial envelope is taken into account.
+It is generally observed that the nonlinear heat flux grows rapidly past the Dimits-shifted nonlinear critical gradient, so we assume that \(\gamma_0\) is close to a regime in which the theory of \citet{zhu_theory_2020} would apply.
+In this case, the wave trapping should lead the growth rate predicted by the quantum harmonic oscillator approximation \eqref{eq:qho_stability} to be close to zero.
+For the \(m=0\) mode which will generally be the most unstable, this results in
+\begin{equation} \label{eq:qho_dimits}
+    \operatorname{Im}[\omega] = \gamma_0 + \frac{n \mathcal{C} \operatorname{Im}[\lambda]}{4} = 0
+\end{equation}
+which relates the zonal flow curvature \(\mathcal{C}\) to the local growth rate \(\gamma_0\) and the properties of the local dispersion relation through \(\lambda\).
+
+As a simple application of this condition, we show how for example it can be used to relate the radial envelope scale of the drift waves with the radial scale of the zonal flows.
+Suppose the radial scale of the zonal flow profile is scaled by a constant factor \(c\), so \(\Omega_E(\rho) \mapsto \Omega_E(c\rho)\).
+In this case, the zonal flow curvature scales as \(\mathcal{C} \mapsto c^{-2} \mathcal{C}\).
+Then, the radial scale of the drift wave envelope will scale as \(\sqrt{\operatorname{Re}[\lambda]} \mapsto c^{1/2} \sqrt{\operatorname{Re}[\lambda]}\).
+
+We remark that although we have focused on electrostatic drift wave ballooning modes in this work, the phenomenon of radial localization of global fluctuation eigenmodes has been observed in several situations.
+For example, the global theory of microtearing mode (MTM) stability, which requires the alignment of a radially-localized radial envelope of the MTMs with a low-order rational surface, has been successfully used to explain quasi-coherent bands observed in pedestal magnetics fluctuations [refs].
+Simulations of pedestal turbulence in wide-pedestal quiescent H-mode have also observed fluctuations which quantitatively match radial fluctuation envelopes measured using fluctuation diagnostics (TODO: which ones?) [refs].
+
+We also remark that the role of zonal flow curvature on the breakup of shearless tori is a little less clear.
+In \citet{osorio-quiroga_shaping_2023}, it was shown that increasing the depth or height of a radial electric field well or hill at fixed width increased the perturbation amplitude necessary to destroy the shearless tori.
+Meanwhile, increasing the width of the well or hill at fixed depth or height tended to also increase the perturbation amplitude necessary to destroy the shearless tori.
+In that work, the effect of the zonal flow profile on the radial envelope of the fluctuations was not considered, which may change the relationship between the amplitude at which the shearless torus breaks.
+Further work is likely necessary to better characterize the relationship between the characteristics of the fluctuations, as influenced self-consistently by the zonal flows, with the amplitude they reach before the shearless torus is broken.
+
+
+
+
+While it is possible to find analytic approximations or perform local gyrokinetic simulations to compute \(\varpi_0\), we will focus here on making some general comments on the condition \eqref{eq:qho_dimits}.
+Generally speaking, for drift waves destabilized by bad curvature on the outboard midplane, we can expect the growth rate \(\operatorname{Im}[\varpi_0]\) to vary much more significantly as a function of \(\theta_k\) compared to the real frequency \(\operatorname{Re}[\varpi_0]\), which should remain close to the drift frequency.
+Taking the crude approximation that
+\begin{equation*}
+    \varpi_0 \approx \omega_0 + i \gamma_0 \cos(\bar{\theta}_k)
+\end{equation*}
+(compare equation (3) of \citet{waltz_theory_1998}, where we have ignored profile shear from kinetic profile variation and assumed that the average growth rate is small compared to the variation in ballooning angle), we can estimate \(\varpi_{\theta_k \theta_k} \approx -i \gamma_0\).
+In this case, we can explicitly evaluate
+\begin{equation} \label{eq:qho_lambda}
+    \operatorname{Re}[\lambda] = \sqrt{\frac{\gamma_0}{2 n |\mathcal{C}|}} \frac{1}{k_\theta \hat{s}}, \qquad \operatorname{Im}[\lambda] = -\operatorname{sign}(\mathcal{C}) \operatorname{Re}[\lambda]
+\end{equation}
+Inserting this into \eqref{eq:qho_dimits} shows that zonal flow curvature will always be stabilizing, and furthermore the zonal flow curvature scales with the growth rate as
+\begin{equation}
+    \mathcal{C} \sim \gamma_0 (k_\theta \hat{s})^2 n^{-1}
+\end{equation}
+where \(n\) will be determined by the most active mode.
+
+It instructive to now compare how this scaling of the zonal flow curvature relates to the local \(E \times B\) shearing rate \(\gamma_E = (\rho/q) \partial_\rho \Omega_E\) [ref].
+Since the zonal flows are driven by the drift waves, we make the assumption that the typical radial scale of the zonal flows \(\ell_{ZF}\) should scale with the length scale of the drift wave envelope \(\ell_{ZF} \sim \sqrt{\operatorname{Re}[\lambda]}\).
+In this case, the maximum shearing rate \(|\gamma_E^{max}| \sim |\mathcal{C}| \ell_{ZF}\).
+Replacing the zonal flow curvature with the shearing rate in \eqref{eq:qho_lambda} allows the radial scale to be computed,
+\begin{equation*}
+    \ell_{ZF} \sim (\gamma_0/\gamma_E^{max})^{1/3} k_\theta^{-1} \hat{s}^{-2/3}
+\end{equation*}
+
+\end{document}

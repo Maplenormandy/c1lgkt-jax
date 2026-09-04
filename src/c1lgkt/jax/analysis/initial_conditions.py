@@ -46,9 +46,23 @@ def quasirandom(bounds: list[list[float]], num: int) -> ScalarArray | tuple[Scal
     else:
         raise NotImplementedError("Quasirandom sampling only implemented for 1D, 2D, and 3D bounds")
 
+def offset_linspace(start: float, stop: float, num: int) -> ScalarArray:
+    """
+    Linspace that gives samples at the midpoints of the intervals rather than at the endpoints. So, for example, half_linspace(0, 1, 4) would give [0.125, 0.375, 0.625, 0.875] rather than [0.0, 0.333..., 0.666..., 1.0].
+    """
+    return jnp.linspace(start, stop, num+1)[:-1] + (stop - start) / (2*num)
 
 # %% Ops for joining outputs from multiple inputs
 
+
+def reshape_broadcast(value: ScalarArray, shape: tuple):
+    """
+    Broadcasts a scalar or reshapes a non-scalar to the given shape. If the value is already the given shape, this is a no-op.
+    """
+    if jnp.shape(value) == ():
+        return jnp.broadcast_to(value, shape)
+    else:
+        return jnp.reshape(value, shape)
 
 def op_broadcast(inputs: list[dict[str, Any]]) -> dict[str, Any]:
     """
@@ -66,7 +80,7 @@ def op_broadcast(inputs: list[dict[str, Any]]) -> dict[str, Any]:
         for key, value in child.items():
             if key in joined:
                 raise ValueError(f"Duplicate key {key} found in children dictionaries. Cannot join.")
-            joined[key] = jnp.broadcast_to(value, child_shape) # broadcast the value to the child shape and store it in the joined dictionary
+            joined[key] = reshape_broadcast(value, child_shape) # broadcast the value to the child shape and store it in the joined dictionary
 
     # Check if we can broadcast all the values to the same shape
     shape = jnp.broadcast_shapes(*shapes)
@@ -99,7 +113,7 @@ def op_meshgrid(inputs: list[dict[str, Any]]) -> dict[str, Any]:
             if key in joined:
                 raise ValueError(f"Duplicate key {key} in child {i}. Cannot meshgrid.")
             s = jnp.shape(value)
-            joined[key] = jnp.broadcast_to(value, child_shape) # broadcast the value to the child shape and store it in the joined dictionary
+            joined[key] = reshape_broadcast(value, child_shape) # broadcast the value to the child shape and store it in the joined dictionary
 
     # --- Compute output shape and per-input reshape targets ---
     # Each input i gets reshaped to: (*1s, *shapes[i], *1s)
@@ -164,7 +178,7 @@ def reduce_inputs(inputs: dict | list[dict[str, Any]]) -> dict[str, Any]:
 
 # %% Custom transformations
 
-def outboard_midplane(input: dict[str, Any], context: dict) -> dict[str, Any]:
+def from_outboard_midplane(input: dict[str, Any], context: dict) -> dict[str, Any]:
     """
     This transform takes psi and and outputs R and Z on the outboard midplane.
     """
@@ -182,11 +196,14 @@ def outboard_midplane(input: dict[str, Any], context: dict) -> dict[str, Any]:
     
     return input
 
-def upar_mu(input: dict[str, Any], context: dict) -> dict[str, Any]:
+def from_pitch(input: dict[str, Any], context: dict) -> dict[str, Any]:
     """
     This transform takes the kinetic energy and pitch angle and outputs mu and upar.
     """
     eq = context['eq']
+
+    if 'psi' in input:
+        input = from_outboard_midplane(input, context)
 
     xi = input.pop('xi')
     ev = input.pop('ev')
@@ -206,14 +223,14 @@ def upar_mu(input: dict[str, Any], context: dict) -> dict[str, Any]:
 
     return input
 
-def integrals(input: dict[str, Any], context: dict) -> dict[str, Any]:
+def to_integrals(input: dict[str, Any], context: dict) -> dict[str, Any]:
     """
-    This transform computes the integrals of motion
+    This transform computes the integrals of motion, forgetting any "angle-like" coordinates.
     """
     if 'psi' in input:
-        input = outboard_midplane(input, context)
+        input = from_outboard_midplane(input, context)
     if 'xi' in input:
-        input = upar_mu(input, context)
+        input = from_pitch(input, context)
         
     t0 = input.get('t0', context.get('t0', 0.0))
     r = input.pop('R')
@@ -265,20 +282,68 @@ def from_integrals(input: dict[str, Any], context: dict) -> dict[str, Any]:
 
     return input
 
+def from_vref(input: dict[str, Any], context: dict) -> dict[str, Any]:
+    """
+    This transform takes velocities specified in units of the reference thermal velocity (1 keV) and returns
+    upar, mu coordinates.
+    """
+    # First, if the input contains psi, we need to transform to R and Z coordinates so that we can compute the magnetic field strength
+    if 'psi' in input:
+        input = from_outboard_midplane(input, context)
+    
+    # Get the parallel velocity
+    vpar = input.pop('vpar')
 
+    # Get the perpendicular velocity, which can be specified either as vperp or as vperp1 and vperp2
+    if 'vperp' in input:
+        vperp = input.pop('vperp')
+    elif 'vperp1' in input and 'vperp2' in input:
+        vperp1 = input.pop('vperp1')
+        vperp2 = input.pop('vperp2')
+        vperp = jnp.sqrt(vperp1**2 + vperp2**2)
+    else:
+        raise ValueError("Invalid input: must specify either vperp or vperp1 and vperp2")
+    
+    pp = context['pp']
+
+    # Get the reference thermal velocity from the context
+    if 'vref' in input:
+        vref = input.pop('vref')
+    else:
+        raise ValueError("Reference velocity 'vref' must be specified in the input for from_vref transform")
+    
+    # Compute the actual velocities
+    upar = vpar * vref
+
+    # compute mu = m vperp^2 / (2 B)
+    r = input['R']
+    z = input['Z']
+    eq = context['eq']
+    bv = eq.compute_bv(r, z)
+    modb = jnp.linalg.norm(bv, axis=0)
+    
+    mu = pp.m * (vperp * vref)**2 / (2 * modb)
+    input['upar'] = upar
+    input['mu'] = mu
+
+    return input
+
+    
 
 # %% Registries of allowed samplers, transforms, and ops
 
 sampler_registry = {
     'linspace': jnp.linspace,
+    'offset_linspace': offset_linspace,
     'quasirandom': quasirandom,
 }
 
 transform_registry = {
-    'outboard_midplane': outboard_midplane,
-    'upar_mu': upar_mu,
-    'integrals': integrals,
+    'from_outboard_midplane': from_outboard_midplane,
+    'from_pitch': from_pitch,
+    'to_integrals': to_integrals,
     'from_integrals': from_integrals,
+    'from_vref': from_vref,
 }
 
 

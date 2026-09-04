@@ -7,7 +7,7 @@ from jaxtyping import Real, ArrayLike
 
 # %%
 
-def wba_weights(n: int) -> Real[ArrayLike, "{n}"]:
+def wba_weights(n: int) -> Real[np.ndarray, "{n}"]:
     """
     Computes the WBA weights for an interval of length n
     
